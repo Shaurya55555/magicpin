@@ -577,13 +577,23 @@ def validate_output(body: str, fs: dict) -> tuple[bool, str]:
     # is safe here (unlike bare numbers)
     date_hay = " ".join(str(f["value"]) for f in fs["hard_facts"] + fs["soft_facts"]).lower()
     date_hay += " " + " ".join(str(f.get("attribute_as", "")) for f in fs["soft_facts"]).lower()
+    # a date may be phrased either as ISO or "8 Apr 2026" - add both forms of every date
+    _mon = {"jan": 1, "feb": 2, "mar": 3, "apr": 4, "may": 5, "jun": 6,
+            "jul": 7, "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12}
+    for y, mo, d in re.findall(r"(\d{4})-(\d{2})-(\d{2})", date_hay):
+        date_hay += f" {int(d)} {[k for k, v in _mon.items() if v == int(mo)][0]} {y}"
+    for d, mon, y in re.findall(r"(\d{1,2})\s+([a-z]{3})[a-z]*\s+(\d{4})", date_hay):
+        if mon[:3] in _mon:
+            date_hay += f" {y}-{_mon[mon[:3]]:02d}-{int(d):02d}"
 
     scrubbed = _GENERIC_TIME.sub(" ", body)
+    scrubbed = re.sub(r"\d{4}-\d{2}-\d{2}(?:t[\d:+.-]+)?", " ", scrubbed, flags=re.I)  # drop ISO datetimes early
 
-    for m in _DATE.finditer(scrubbed):
+    for m in _DATE.finditer(body):
         d = m.group(0).lower().strip()
         if d not in date_hay and _norm_num(d) not in _norm_num(date_hay):
             return False, f"unverified date {m.group(0)!r}"
+    scrubbed = _DATE.sub(" ", scrubbed)   # keep verified date digits out of the number check
 
     # A number must never be attached to the wrong metric (checked for every message,
     # artifact or not).
