@@ -260,21 +260,22 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
           "phrase gently as 'it's been a while'")
     else:
         # ---- MERCHANT-FACING: reader is the owner, sent as Vera. -----------
-        H("views in last 30 days", perf.get("views"))
-        H("calls in last 30 days", perf.get("calls"))
-        H("direction requests in last 30 days", perf.get("directions"))
-        H("leads in last 30 days", perf.get("leads"))
-        if _present(perf.get("ctr")):
-            H("listing click rate", _pct(perf["ctr"], signed=False))
-        for s in _g(merchant, "signals", default=[]) or []:
-            base = str(s).split(":")[0]                 # "stale_posts:22d" -> "stale_posts"
-            phrase = _SIGNAL_PHRASING.get(base, _SIGNAL_PHRASING.get(str(s)))
-            if phrase:
-                H("something true about this account", phrase)
-        # A research / compliance / CE briefing is not the moment to push a price offer -
-        # shoehorning "get a Dental Cleaning @ ₹299" into a radiograph-compliance note reads
-        # as a non-sequitur. Skip offers for those kinds.
-        if kind not in ("research_digest", "regulation_change", "cde_opportunity"):
+        # A research / compliance / CE briefing is about the briefing — the merchant's
+        # view count and active price offer are non-sequiturs there, so don't even hand
+        # them to the writer for those kinds.
+        _briefing = kind in ("research_digest", "regulation_change", "cde_opportunity")
+        if not _briefing:
+            H("views in last 30 days", perf.get("views"))
+            H("calls in last 30 days", perf.get("calls"))
+            H("direction requests in last 30 days", perf.get("directions"))
+            H("leads in last 30 days", perf.get("leads"))
+            if _present(perf.get("ctr")):
+                H("listing click rate", _pct(perf["ctr"], signed=False))
+            for s in _g(merchant, "signals", default=[]) or []:
+                base = str(s).split(":")[0]             # "stale_posts:22d" -> "stale_posts"
+                phrase = _SIGNAL_PHRASING.get(base, _SIGNAL_PHRASING.get(str(s)))
+                if phrase:
+                    H("something true about this account", phrase)
             _emit_offers()
         _emit_payload()
 
