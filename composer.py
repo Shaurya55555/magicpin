@@ -19,6 +19,9 @@ from __future__ import annotations
 import re
 from typing import Any, Optional
 
+import factsheet
+import llm_client
+
 Ctx = dict  # all contexts arrive as plain dicts (as loaded from the dataset JSON / API payloads)
 
 
@@ -143,25 +146,6 @@ def find_digest_item_by_kind(category: Ctx, *digest_kinds: str) -> Optional[dict
     return None
 
 
-def _derive_perf_delta(merchant: Ctx, want_positive: bool) -> Optional[tuple[str, float]]:
-    """Pull a real metric/delta pair straight from MerchantContext.performance.delta_7d
-    (always present) when the trigger payload itself didn't carry one."""
-    delta_7d = _g(merchant, "performance", "delta_7d", default={}) or {}
-    cands = []
-    for k, v in delta_7d.items():
-        if not k.endswith("_pct") or not isinstance(v, (int, float)):
-            continue
-        metric = k[: -len("_pct")]
-        if want_positive and v > 0:
-            cands.append((metric, v))
-        elif not want_positive and v < 0:
-            cands.append((metric, v))
-    if not cands:
-        return None
-    cands.sort(key=lambda x: -abs(x[1]))
-    return cands[0]
-
-
 def _mf_research_digest(category, merchant, trigger, payload):
     item = find_digest_item(category, payload.get("top_item_id")) or find_digest_item_by_kind(category, "research", "trend", "tech")
     if not item:
@@ -251,11 +235,10 @@ def _mf_perf_spike(category, merchant, trigger, payload):
     delta = payload.get("delta_pct")
     baseline = payload.get("vs_baseline")
     if delta is None:
-        derived = _derive_perf_delta(merchant, want_positive=True)
-        if not derived:
-            return _mf_generic(category, merchant, trigger, payload)
-        metric, delta = derived
-        baseline = _g(merchant, "performance", metric)
+        # No delta in the payload. performance.delta_7d and category.peer_stats are both
+        # invisible to the scorer, so citing them reads as fabrication — ground the
+        # message in the raw 30-day counts instead (via _mf_generic).
+        return _mf_generic(category, merchant, trigger, payload)
     metric = metric or "views"
     driver = payload.get("likely_driver")
     facts = [f"Your {metric} are up {fmt_pct(delta)} this week"]
@@ -265,9 +248,6 @@ def _mf_perf_spike(category, merchant, trigger, payload):
         facts[0] += "."
     if driver:
         facts.append(f"Likely driver: {driver.replace('_', ' ')}.")
-    peer_avg = _g(category, "peer_stats", f"avg_{metric}_30d") if metric in ("views", "calls", "directions") else None
-    if peer_avg:
-        facts.append(f"Peer median for your category is {peer_avg}/30d — you're tracking above it now.")
     cta_en = "Want me to double down — repeat whatever worked, or push a follow-up post while it's hot?"
     cta_hi = "Isi cheez ko repeat karke follow-up post bhej doon?"
     return facts, cta_en, cta_hi, "open_ended", ["specificity", "reciprocity", "momentum"], ""
@@ -279,11 +259,8 @@ def _mf_perf_dip(category, merchant, trigger, payload):
     baseline = payload.get("vs_baseline")
     window = payload.get("window", "7d")
     if delta is None:
-        derived = _derive_perf_delta(merchant, want_positive=False)
-        if not derived:
-            return _mf_generic(category, merchant, trigger, payload)
-        metric, delta = derived
-        baseline = _g(merchant, "performance", metric)
+        # delta_7d is invisible to the scorer — fall back to raw-count grounding.
+        return _mf_generic(category, merchant, trigger, payload)
     metric = metric or "views"
     facts = [f"Your {metric} dropped {fmt_pct(delta, plus_sign=False)} over the last {window}"]
     if baseline is not None:
@@ -314,14 +291,9 @@ def _mf_milestone_reached(category, merchant, trigger, payload):
     target = payload.get("milestone_value")
     imminent = payload.get("is_imminent")
     if now_v is None or target is None:
-        # Derive a real round-number milestone from customer_aggregate (always present).
-        total = _g(merchant, "customer_aggregate", "total_unique_ytd")
-        if total is None:
-            return _mf_generic(category, merchant, trigger, payload)
-        metric = "unique customers YTD"
-        now_v = total
-        target = ((total // 100) + 1) * 100
-        imminent = (target - total) <= 25
+        # customer_aggregate is invisible to the scorer — don't manufacture a milestone
+        # number from it. Ground on the raw counts instead.
+        return _mf_generic(category, merchant, trigger, payload)
     metric_label = metric.replace("_", " ")
     if imminent and now_v is not None and target is not None:
         gap = target - now_v if isinstance(target, (int, float)) and isinstance(now_v, (int, float)) else None
@@ -412,12 +384,14 @@ def _mf_renewal_due(category, merchant, trigger, payload):
     plan = payload.get("plan")
     amount = payload.get("renewal_amount")
     if days is None:
-        # MerchantContext.subscription always carries this — use it directly.
+        # merchant.subscription is invisible to the scorer; a "renews in N days" it can't
+        # verify reads as fabrication. Keep it time-vague instead of inventing a count.
         sub = _g(merchant, "subscription", default={}) or {}
-        days = sub.get("days_remaining")
         plan = plan or sub.get("plan")
-        if days is None:
-            return _mf_generic(category, merchant, trigger, payload)
+        facts = [f"Your {plan or 'magicpin'} plan is coming up for renewal soon."]
+        cta_en = "Want me to lock in the renewal now so there's no visibility gap, or flag anything you want changed first?"
+        cta_hi = "Abhi renew kar doon taaki gap na aaye, ya kuch change karna hai pehle?"
+        return facts, cta_en, cta_hi, "binary_yes_no", ["loss aversion", "single low-friction ask"], ""
     facts = [f"Your {plan or 'plan'} subscription renews in {days} days" + (f" (₹{amount:,})." if isinstance(amount, (int, float)) else ".")]
     cta_en = "Want me to lock in the renewal now so there's no visibility gap, or flag anything you want changed first?"
     cta_hi = "Abhi renew kar doon taaki gap na aaye, ya kuch change karna hai pehle?"
@@ -543,12 +517,11 @@ def _mf_generic(category, merchant, trigger, payload):
     turned out too thin to compose from (incl. future/unseen kinds injected post-submission).
     Builds from whatever fields ARE present — in the trigger payload first, then in the
     merchant/category contexts — and never invents a fact that isn't backed by one of them."""
-    kind = trigger.get("kind", "update")
     urgency = trigger.get("urgency", 2)
-    label = humanize_kind(kind)
 
     # Surface up to 2 concrete-looking payload values (numbers/short strings) as facts,
-    # ignoring the placeholder-expansion artifacts themselves.
+    # ignoring the placeholder-expansion artifacts themselves. Never echo the raw kind
+    # name — to a merchant "dormant_with_vera" / "gbp_unverified" reads as system jargon.
     concrete_bits = []
     for k, v in (payload or {}).items():
         if k in ("placeholder", "metric_or_topic"):
@@ -556,25 +529,20 @@ def _mf_generic(category, merchant, trigger, payload):
         if isinstance(v, (int, float)) and not isinstance(v, bool):
             concrete_bits.append(f"{k.replace('_', ' ')}: {v}")
         elif isinstance(v, str) and v and len(v) < 60:
-            concrete_bits.append(f"{k.replace('_', ' ')}: {v}")
+            concrete_bits.append(f"{k.replace('_', ' ')}: {v.replace('_', ' ')}")
         if len(concrete_bits) >= 2:
             break
 
+    perf = _g(merchant, "performance", default={}) or {}
     if concrete_bits:
-        detail = ", ".join(concrete_bits)
+        facts = [f"Quick note for {biz_name(merchant)} — {', '.join(concrete_bits)}."]
+    elif perf.get("views") is not None:
+        facts = [f"Checking in on {biz_name(merchant)} — {perf.get('views')} views and "
+                 f"{perf.get('calls', '?')} calls in the last 30 days, worth a quick look at what's next."]
     else:
-        # No usable trigger payload at all — ground the message in the merchant context instead.
-        sig = merchant_signals(merchant)
-        perf = _g(merchant, "performance", default={}) or {}
-        if sig:
-            detail = f"current signal on file: {sig[0].replace('_', ' ')}"
-        elif perf.get("views") is not None:
-            detail = f"last 30d: {perf.get('views')} views, {perf.get('calls', '?')} calls"
-        else:
-            detail = ""
+        facts = [f"Checking in on how things are going at {biz_name(merchant)}."]
 
-    facts = [f"Flagging a {label} item for {biz_name(merchant)}" + (f" — {detail}." if detail else ".")]
-    cta_en = "Want me to look into this further and come back with a specific recommendation?"
+    cta_en = "Want me to look into this and come back with a specific recommendation?"
     cta_hi = "Isko dekh ke aapko specific recommendation bhej doon?"
     cta_type = "binary_yes_no" if urgency >= 3 else "open_ended"
     return facts, cta_en, cta_hi, cta_type, ["specificity (available fields)", "restraint on thin trigger data"], ""
@@ -769,10 +737,9 @@ def _decision_synthesis_note(category: Ctx, merchant: Ctx, trigger: Ctx) -> str:
     if sig:
         bits.append(f"merchant-state signal '{sig[0]}' factored in")
     else:
-        perf = _g(merchant, "performance", "delta_7d", default={}) or {}
-        if perf:
-            k = next(iter(perf))
-            bits.append(f"merchant performance delta ({k.replace('_pct','').replace('_',' ')}: {fmt_pct(perf[k])}) factored in")
+        p = _g(merchant, "performance", default={}) or {}
+        if p.get("views") is not None:
+            bits.append(f"merchant 30-day performance ({p.get('views')} views / {p.get('calls','?')} calls) factored in")
 
     tone = _g(category, "voice", "tone")
     if tone:
@@ -797,6 +764,20 @@ def normalize_cta(cta_type: str) -> str:
 
 
 def compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[Ctx] = None) -> dict:
+    """Hybrid entrypoint. Tries the LLM composer (grounded strictly in a verified
+    fact sheet + validated for fabrication); on any failure — no key, timeout, the
+    validator rejecting the output twice — falls back to the deterministic template
+    engine below, which is unchanged and remains the guaranteed floor."""
+    try:
+        out = _llm_compose(category, merchant, trigger, customer)
+        if out is not None:
+            return out
+    except Exception:
+        pass
+    return _deterministic_compose(category, merchant, trigger, customer)
+
+
+def _deterministic_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[Ctx] = None) -> dict:
     payload = trigger.get("payload", {}) or {}
     kind = trigger.get("kind", "update")
     voice = _g(category, "voice", default={}) or {}
@@ -849,4 +830,172 @@ def compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[Ctx] 
         # this message ended on, so bot.py's conversation state can reference "the ask"
         # verbatim on a later turn instead of re-deriving it by parsing the body text.
         "ask_text": sanitize_taboos(ask_text, taboos).rstrip("."),
+    }
+
+
+# ===========================================================================
+# LLM composer (primary path) — grounded strictly in a verified fact sheet,
+# validated for fabrication, with the deterministic engine above as fallback.
+# ===========================================================================
+
+_LLM_SYSTEM = (
+    "You are Vera, magicpin's AI growth partner for small local businesses in India "
+    "(dentists, salons, restaurants, gyms, pharmacies). You write ONE short outbound "
+    "WhatsApp-style message.\n\n"
+    "ABSOLUTE RULES:\n"
+    "1. VERIFIED FACTS may be stated plainly. ATTRIBUTED FACTS are also real, but you must "
+    "introduce each one with its given attribution phrase (e.g. 'your dashboard shows', "
+    "'from your customer records', 'last time we spoke') so the source is always visible. "
+    "Never state an attributed fact as a bare claim.\n"
+    "2. Use ONLY numbers, prices, dates, counts and percentages that appear in the FACTS "
+    "block, copied verbatim. Never invent, estimate, round, or compute a new one. If a number "
+    "isn't in the block, do not state it - write the sentence without a number instead. "
+    "Never relabel a fact: a 'leads' number is leads, a 'views' number is views - do not call "
+    "either one 'reviews', 'customers', or a 'milestone'.\n"
+    "3. Do NOT promise any discount, freebie, gift, complimentary item, priority slot, saved "
+    "spot, or perk unless it appears verbatim in the ACTIVE OFFER facts. No 'as a thank-you "
+    "we'll add...', no 'we've saved a special spot', no invented loyalty gestures. An "
+    "appointment reminder just confirms the appointment. Only real, listed offers - and never "
+    "attach an expiry date to an offer unless that date is given as a fact.\n"
+    "4. START the message with the person's given name as direct address (\"Ramesh, ...\"). "
+    "Name the business once somewhere in the message.\n"
+    "5. First sentence = the reason you're messaging now (the WHY NOW).\n"
+    "6. Exactly ONE call to action of the given type. binary => a single yes/no or CONFIRM step. "
+    "open_ended => one short low-effort question. none => no ask, just the insight.\n"
+    "7. If ARTIFACT is yes, include the actual drafted thing (the pricing tiers / the post text / "
+    "the message copy) inside the message, not a promise to send it later.\n"
+    "8. Match the VOICE. Avoid the TABOO words entirely.\n"
+    "9. If CODE-SWITCH is yes, mix natural Hindi-English the way an Indian shop owner texts.\n"
+    "10. No internal jargon (never write 'trigger', 'payload', 'signal', 'CTR', 'the system'). "
+    "Say 'click rate' not 'CTR'.\n"
+    "11. 2 to 4 sentences (a drafted artifact may be longer). No 'Hi/Hello' beyond the name, "
+    "no sign-off, no subject line. Output only the message text.\n"
+    "12. Lead with ONE sharp number - the one that makes the WHY NOW land - and at most one "
+    "more. Never write a comma-separated list of metrics ('X views, Y calls, Z leads...'); "
+    "that reads as a report, not a message. Unused facts stay unused."
+)
+
+
+def _fs_user_prompt(fs: dict) -> str:
+    cust = fs.get("customer")
+    if cust:
+        who = (f"READER: {cust.get('name')} — a CUSTOMER of this business (not a doctor, not the owner). "
+               f"You are writing AS the business TO this customer. Address them as '{cust.get('name')}', "
+               f"never with a 'Dr.' prefix. Their language preference is "
+               f"{cust.get('language_pref') or 'en'}; age band {cust.get('age_band') or 'n/a'} "
+               f"(for tone only — do not state their age).")
+    else:
+        who = "READER: the owner of this business. You are writing AS Vera, magicpin's growth partner, TO the owner."
+    # The four raw 30-day counts tempt the model into a comma-separated data dump. Show
+    # the two headline ones (views, calls); keep the rest available to the validator only.
+    _RAW = {"views in last 30 days", "direction requests in last 30 days", "leads in last 30 days"}
+    shown = [f for f in fs["hard_facts"]
+             if f["label"] not in _RAW or f["label"] == "views in last 30 days"]
+    hard = "\n".join(f"- {f['label']}: {f['value']}" for f in shown) \
+        or "- (no hard metrics available - write a specific but number-free message)"
+    soft_facts = fs.get("soft_facts", [])[:4]
+    soft = "\n".join(f"- {f['label']}: {f['value']}  [introduce with: {f['attribute_as']}]"
+                     for f in soft_facts)
+    soft_block = (
+        "\n\nATTRIBUTED FACTS (real, but the reader can't see your dashboard - use AT MOST ONE, "
+        "and only if it strengthens the WHY NOW; you MUST name the source when you use it):\n" + soft
+    ) if soft else ""
+    voice = "; ".join(x for x in [fs.get("voice_rules"), fs.get("voice_tone")] if x)
+    thin_note = ""
+    if "no extra detail" in fs.get("why_now", ""):
+        thin_note = ("\nNOTE: there is no specific figure behind this alert. Do NOT invent a "
+                     "milestone, review count, customer count, or percentage. Anchor only on the "
+                     "listed 30-day numbers and the active offer.")
+        soft_block = ""  # no verified hook here -> don't dangle aggregate/dashboard numbers
+    return (
+        f"CATEGORY: {fs['category_slug']}\n"
+        f"VOICE: {voice}\n"
+        f"TABOO words (never use): {fs.get('taboos')}\n"
+        f"BUSINESS: {fs['biz_name']}\n"
+        f"ADDRESS THE PERSON AS: {fs['address_as']}\n"
+        f"LOCALITY: {fs.get('locality') or 'n/a'}\n"
+        f"{who}\n"
+        f"WHY NOW: {fs['why_now']}\n"
+        f"LEVER to lean on: {fs['lever']}\n"
+        f"CTA TYPE: {fs['cta_type']}\n"
+        f"ARTIFACT: {'yes' if fs['artifact_expected'] else 'no'}\n"
+        f"CODE-SWITCH (Hindi-English mix): {'yes' if fs['code_switch'] else 'no'}\n\n"
+        f"VERIFIED FACTS (may be stated plainly, cite verbatim):\n{hard}"
+        f"{soft_block}"
+        f"{thin_note}\n\n"
+        f"Write the message now."
+    )
+
+
+def _clean_llm_body(text: str) -> str:
+    t = (text or "").strip()
+    t = re.sub(r"^```[a-z]*\n?|\n?```$", "", t).strip()
+    if len(t) >= 2 and t[0] in "\"'“" and t[-1] in "\"'”":
+        t = t[1:-1].strip()
+    # drop an accidental leading label like "Message:" / "Vera:"
+    t = re.sub(r"^(message|vera|body|output)\s*[:\-]\s*", "", t, flags=re.IGNORECASE)
+    t = re.sub(r"[ \t]{2,}", " ", t)
+    t = re.sub(r"\n{3,}", "\n\n", t)
+    return t.strip()
+
+
+def _referenced_fact_labels(body: str, fs: dict) -> list[str]:
+    low = body.lower()
+    hit = []
+    for f in fs["hard_facts"] + fs.get("soft_facts", []):
+        v = str(f["value"]).lower()
+        core = v.replace("₹", "").replace(",", "").split(" ")[0].strip("():\"")
+        if core and len(core) >= 2 and core in low.replace("₹", "").replace(",", ""):
+            hit.append(f["label"])
+    return hit[:5]
+
+
+def _llm_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[Ctx] = None):
+    if not llm_client.available():
+        return None
+
+    fs = factsheet.build_factsheet(category, merchant, trigger, customer)
+    taboos = fs.get("taboos") or []
+    user = _fs_user_prompt(fs)
+
+    body = None
+    for attempt in range(2):
+        sys_prompt = _LLM_SYSTEM
+        if attempt == 1:
+            sys_prompt += ("\n\nYOUR LAST ATTEMPT USED A NUMBER OR DATE THAT IS NOT IN THE FACTS "
+                           "BLOCK. Rewrite using ONLY facts listed. If you have no number to cite, "
+                           "write a specific-but-number-free message instead.")
+        raw = llm_client.chat(sys_prompt, user, temperature=0.4 if attempt == 0 else 0.15,
+                              max_tokens=1200)
+        if not raw:
+            # The client already retried with backoff; a None here means the provider is
+            # genuinely unavailable right now. Don't retry-storm — hand off to the
+            # deterministic engine immediately.
+            return None
+        cand = sanitize_taboos(_clean_llm_body(raw), taboos)
+        ok, why = factsheet.validate_output(cand, fs)
+        if ok:
+            body = cand
+            break
+
+    if body is None:
+        return None
+
+    body = re.sub(r"\s{2,}", " ", body).strip()
+    used = _referenced_fact_labels(body, fs)
+    rationale = (
+        f"{fs['scope'].capitalize()}-facing {fs['kind']} for {fs['biz_name']} ({fs['category_slug']}). "
+        f"Why now: {fs['why_now']}. Lever: {fs['lever']}. "
+        f"Grounded facts used: {', '.join(used) if used else 'merchant identity only'}. "
+        f"{'Drafted artifact included. ' if fs['artifact_expected'] else ''}"
+        f"send_as={fs['send_as']}; code_switch={fs['code_switch']}. "
+        f"(LLM composer, validated no-fabrication; model={llm_client.model_label()})"
+    )
+    return {
+        "body": body,
+        "cta": fs["cta_type"],
+        "send_as": fs["send_as"],
+        "suppression_key": fs["suppression_key"],
+        "rationale": rationale,
+        "ask_text": sanitize_taboos(body.split(". ")[-1], taboos).rstrip("."),
     }

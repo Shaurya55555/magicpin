@@ -26,6 +26,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 import composer
+import llm_client
 import storage
 from conversation_handlers import ConversationState, respond as ch_respond
 
@@ -227,10 +228,15 @@ async def metadata():
     return {
         "team_name": TEAM_NAME,
         "team_members": TEAM_MEMBERS,
-        "model": "rule-based-composer-v1 (no external LLM call; see README.md)",
-        "approach": "Deterministic per-trigger-kind template engine over the 4-context framework, "
-                    "with a generic fallback for unseen trigger kinds; multi-turn state machine for "
-                    "auto-reply detection / intent-transition / hostile handling.",
+        "model": (f"hybrid-composer-v2 ({llm_client.model_label()} for prose + "
+                  "deterministic fact-sheet/validator/fallback)"),
+        "approach": "Deterministic layer picks the trigger, extracts a verified fact sheet "
+                    "(scoped to what a message can actually cite) and validates every draft for "
+                    "fabrication and jargon; an LLM writes the prose from that fact sheet only. "
+                    "The rule-based per-trigger-kind template engine remains the guaranteed "
+                    "fallback whenever the LLM is unavailable or a draft fails validation. "
+                    "Multi-turn state machine for auto-reply detection / intent-transition / "
+                    "hostile handling.",
         "contact_email": CONTACT_EMAIL,
         "version": BOT_VERSION,
         "submitted_at": _now(),

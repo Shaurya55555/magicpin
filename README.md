@@ -8,7 +8,9 @@
 
 | File | What it is |
 |---|---|
-| `composer.py` | Core message-composition logic — the `compose(category, merchant, trigger, customer=None)` function required by §7.3. |
+| `composer.py` | Core message-composition logic — the `compose(category, merchant, trigger, customer=None)` function required by §7.3. Hybrid: LLM prose over a verified fact sheet, deterministic template engine as fallback. |
+| `factsheet.py` | Extracts the labelled, two-tier fact sheet each message is built from, and `validate_output()` — the machine check that rejects any draft citing an unverifiable number, date, or internal term. |
+| `llm_client.py` | Minimal env-driven chat client (urllib only, no new dependency) with timeout, retry/backoff, and a graceful "return nothing → fall back" contract. |
 | `bot.py` | FastAPI service implementing the 5-endpoint HTTP contract from `challenge-testing-brief.md` (`/v1/context`, `/v1/tick`, `/v1/reply`, `/v1/healthz`, `/v1/metadata`, plus an optional `/v1/teardown`). |
 | `conversation_handlers.py` | Optional §7.4 deliverable — a deterministic multi-turn `respond(state, message)` state machine used by `/v1/reply`. |
 | `storage.py` | State store used by `bot.py` — Redis (Upstash REST API) in production, in-memory fallback for local dev. See "Deployment & state" below. |
@@ -18,19 +20,33 @@
 
 ## Approach
 
-**We chose a deterministic, rule-based composer instead of an LLM call.** Every message is built by a per-trigger-kind template function that reads only the four context payloads (category, merchant, trigger, customer) and assembles a body from fields that are actually present. There is no model in the loop for `/v1/context` or `/v1/tick`.
+**Hybrid: a deterministic layer decides and verifies; an LLM only writes the prose.** Every composed message goes through the same pipeline:
+
+1. **Deterministic trigger selection** (`bot.py` `/v1/tick`) — `_priority_score()` ranks candidate triggers by urgency, inherent business stakes, merchant-state-signal match, and category fit, with restraint floors that send nothing rather than force a weak message. (Detailed under "Decision quality" below.)
+2. **Verified fact sheet** (`factsheet.py` `build_factsheet()`) — a strict, labelled list of facts pulled from the four contexts, split into two tiers:
+   - **hard facts** the message may state plainly — merchant identity, raw 30-day performance counts, account signal strings, active-offer titles, the trigger payload;
+   - **soft facts** that are real but that a recipient can't see for themselves (week-on-week deltas, aggregate customer counts, review themes, a research-digest finding) — usable **only** with an explicit attribution phrase ("your dashboard shows…", "a few recent reviews mention…", or a cited source), so no claim ever appears without a visible provenance.
+   Merchant-facing and customer-facing fact sheets are built differently — a customer is never shown the merchant's performance stats.
+3. **LLM prose** (`llm_client.py` + `composer._llm_compose`) — one chat call writes the message from the fact sheet and nothing else, under a system prompt that forbids inventing or relabelling any number, promising any unlisted offer, or leaking internal vocabulary.
+4. **Validation** (`factsheet.validate_output`) — every draft is machine-checked: each number, price, percentage and date in the body must be a verbatim substring of a fact-sheet value (generic time/distance expressions and drafted-artifact figures excepted), and a jargon blocklist rejects `ctr`, `payload`, `peer median` and similar. A failing draft is retried once with a stricter reminder.
+5. **Deterministic fallback** (`composer._deterministic_compose`) — the original per-trigger-kind template engine, run whenever the LLM key is absent, the call fails or times out, or a draft fails validation twice. It is fully self-contained and never itself calls out; its templates were also tightened so they never cite a field the scorer can't see (`performance.delta_7d`, `category.peer_stats`, `customer_aggregate`) — those paths now ground on the raw 30-day counts instead.
 
 The reasoning:
 
-- **Anti-fabrication is the single most heavily weighted failure mode in the rubric.** An LLM, even a well-prompted one, can paraphrase its way into inventing a number, a date, or a claim that isn't in the payload. A rule engine that only ever interpolates fields it read from the context objects structurally cannot do that — if a fact isn't in the payload, the composer either finds an equivalent fact elsewhere in the same merchant/category/customer context, or falls back to a grounded-but-generic message. It never guesses.
-- **Determinism and latency.** The brief requires responses within 30s and rewards consistent behavior across the warmup/test/replay phases. A template engine responds in single-digit milliseconds and gives byte-identical output for byte-identical input, which also makes the whole thing trivial to unit-test and to debug when the judge's replay phase surfaces an edge case.
-- **Cost/complexity.** No API key, no rate limits, no retry/timeout handling, nothing that can silently degrade mid-test-window.
+- **Anti-fabrication is the single most heavily weighted failure mode in the rubric**, so it's prevented structurally rather than by trusting a prompt: the model is handed a closed list of facts, and the output is mechanically checked against that same list before it's allowed out. The deterministic layer, not the model, decides *what* to say and *whether* to say anything.
+- **The judgement lives in the deterministic layer** — trigger ranking, the restraint floors, customer-vs-merchant fact scoping, the "no specific figure behind this alert, so don't invent one" path. These are the decisions the rubric's "decision quality" dimension rewards, and they're explicit and inspectable, not left to model discretion.
+- **The LLM earns its place on fluency only** — per-category voice, natural Hindi-English code-switching (`customer.identity.language_pref` / `merchant.identity.languages`), and turning a fact sheet into two-to-four compelling sentences with one low-friction CTA.
+- **Graceful degradation.** No API key, a rate-limit, a timeout, or a bad draft all resolve to the deterministic engine, so the bot can't hard-fail on an LLM hiccup during the test window. With the LLM env vars unset the bot runs deterministic-only and still satisfies the full contract.
 
-The tradeoff we accepted: raw fluency and one-off cleverness are lower than what a strong LLM prompt could produce on a rich payload. We tried to close that gap with per-category voice (a dentist's "compliance heads-up" reads differently from a salon's "trend alert"), Hindi-English code-switching driven by `customer.identity.language_pref` / `merchant.identity.languages`, and layered compulsion levers (specificity, loss aversion, social proof, effort externalization, single binary CTA) baked into each template rather than left to a model's discretion.
+Enable the LLM path by setting `LLM_PROVIDER` and `LLM_API_KEY` (optionally `LLM_MODEL`, default `openai/gpt-oss-120b` on Groq; `LLM_REASONING_EFFORT`, default `low`).
 
 ### Composer design
 
-`composer.py` has two dispatch tables:
+`compose()` is the hybrid entrypoint: it calls `_llm_compose()` first and returns `_deterministic_compose()` on any failure. Both return the identical contract dict (`body, cta, send_as, suppression_key, rationale`, plus an internal `ask_text`).
+
+**The LLM path** (`_llm_compose`): build the fact sheet → render it into a system+user prompt (`_LLM_SYSTEM` carries the absolute rules; `_fs_user_prompt` lays out category/voice/taboos/reader/why-now/lever/CTA-type/artifact-flag/code-switch and the two fact tiers) → one `llm_client.chat()` call → `_clean_llm_body()` strips fences/labels → `sanitize_taboos()` → `factsheet.validate_output()`. Two attempts (the second at lower temperature with a stricter reminder); if neither validates, return `None` and let `compose()` fall back.
+
+**The deterministic path** (`_deterministic_compose`) keeps the original two dispatch tables:
 
 - `MERCHANT_COMPOSERS` — one function per merchant-facing trigger kind (`research_digest`, `perf_spike`, `perf_dip`, `competitor_opened`, `milestone_reached`, `festival_upcoming`, `renewal_due`, `gbp_unverified`, `supply_alert`, `active_planning_intent`, and 9 others), covering all 26 trigger kinds present in the generated dataset.
 - `CUSTOMER_COMPOSERS` — one function per customer-facing kind (`recall_due`, `chronic_refill_due`, `customer_lapsed_soft/hard`, `appointment_tomorrow`, `trial_followup`, `wedding_package_followup`).
