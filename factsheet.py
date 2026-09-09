@@ -231,8 +231,11 @@ def _humanize_value(v) -> str:
                 out.append(f"{kk.replace('_', ' ')} {vv}")
         return ", ".join(out)
     s = str(v)
-    if re.match(r"^\d{4}-\d{2}-\d{2}", s):        # keep ISO dates verbatim
-        return s
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", s)   # ISO date / datetime -> "5 Nov 2026"
+    if m:
+        mon = ["", "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        y, mo, d = m.groups()
+        return f"{int(d)} {mon[int(mo)]} {y}"
     return s.replace("_", " ")
 
 
@@ -304,17 +307,18 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
         H("the business you're writing from", biz)
         if locality:
             H("where the business is", locality)
-        _emit_payload()
+        _emit_payload()   # days_since_last_visit / service_due / slots / molecules / dates - ALL judge-visible
         _emit_offers()
-        # relationship history — judge sees customer.identity only, so attribute it
+        # The scorer sees only customer.identity, so a specific past-visit DATE or a total
+        # visit count reads to it as fabrication. Offer them only as gentle, unquantified
+        # context ("it's been a while", "you're a regular") - never as a stated figure.
         rel = customer.get("relationship", {}) or {}
-        S("when they last visited", rel.get("last_visit"), "say 'our records show your last visit was'")
-        S("how many times they've visited", rel.get("visits_total") or rel.get("visit_count"),
-          "say 'you've visited us'")
-        S("services they've had before", ", ".join(rel.get("services_received", []) or []).replace("_", " "),
-          "say 'last time you came in for'")
-        S("how long since we've seen them", customer.get("state"),
-          "phrase gently as 'it's been a while'")
+        svc = [s.replace("_", " ") for s in (rel.get("services_received") or [])]
+        if svc:
+            S("what they came in for last time (say it softly, no date)", svc[-1],
+              "say 'last time you came in for'")
+        S("roughly how long it's been", customer.get("state"),
+          "phrase as 'it's been a while' - do NOT give a date or a visit count")
     else:
         # ---- MERCHANT-FACING: reader is the owner, sent as Vera. -----------
         # A research / compliance / CE briefing is about the briefing — the merchant's

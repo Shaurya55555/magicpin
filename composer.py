@@ -887,8 +887,21 @@ _LLM_SYSTEM = (
     "Name the business once somewhere in the message.\n"
     "5. First sentence = OPEN ON (the hook), which is the reason you're messaging now. "
     "Serve the OBJECTIVE - that is what the whole message is for.\n"
-    "6. Exactly ONE call to action of the given type. binary => a single yes/no or CONFIRM step. "
-    "open_ended => one short low-effort question. none => no ask, just the insight.\n"
+    "6. Exactly ONE call to action of the given type. It must NOT be a bare 'reply Yes' - make "
+    "it specific and slightly urgent, tied to what is at stake. If the FACTS give slot times or "
+    "options, put them IN the CTA ('reply 1 for Wed 6pm, 2 for Thu 5pm'). If there is a real "
+    "deadline or a closing window in the facts, name it in the CTA. binary => a single decisive "
+    "step. open_ended => one specific question they can answer in five seconds. none => no ask. "
+    "Never invent scarcity ('limited seats', 'only today') that isn't in the facts - use the "
+    "genuine stakes that are: a deadline, a competitor taking traffic now, a milestone within "
+    "reach, stock about to run out, a match tonight.\n"
+    "6b. DEPLOY THE LEVER. The message must make the reader FEEL the LEVER, not just state a "
+    "fact. loss_aversion => name what slips away if they do nothing. social_proof => "
+    "'businesses like yours' / 'other salons in your area' are already doing this - phrase it "
+    "as a pattern, NEVER invent a specific percentage or count for the peer group. curiosity => "
+    "open a specific gap they'll want closed. urgency => the clock, concretely. warmth => "
+    "genuine, personal, no guilt. reciprocity => you've already done the work, they just say "
+    "go. Sentence 3 (the implication) is where the lever lives - make it sting or pull.\n"
     "7. If ARTIFACT is yes, include the actual drafted thing (the pricing tiers / the post text / "
     "the message copy) inside the message, not a promise to send it later. A draft may lay out "
     "STRUCTURE (tier labels, session counts, a schedule) but must NOT invent a rupee price, a "
@@ -899,7 +912,7 @@ _LLM_SYSTEM = (
     "9. If CODE-SWITCH is yes, mix natural Hindi-English the way an Indian shop owner texts.\n"
     "10. No internal jargon (never write 'trigger', 'payload', 'signal', 'CTR', 'the system'). "
     "Say 'click rate' not 'CTR'.\n"
-    "11. 2 to 3 sentences, under ~45 words (a drafted artifact may be longer). No 'Hi/Hello' "
+    "11. 2 to 4 sentences, roughly 30-55 words (a drafted artifact may be longer). No 'Hi/Hello' "
     "beyond the name, no sign-off, no subject line. Output only the message text.\n"
     "12. Use ONE primary numeric fact. A second number is allowed only when it is inseparable "
     "from the same event, comparison, range, or milestone (competitor's price vs yours; "
@@ -919,7 +932,11 @@ def _fs_user_prompt(fs: dict) -> str:
                f"You are writing AS the business TO this customer. Address them as '{cust.get('name')}', "
                f"never with a 'Dr.' prefix. Their language preference is "
                f"{cust.get('language_pref') or 'en'}; age band {cust.get('age_band') or 'n/a'} "
-               f"(for tone only — do not state their age).")
+               f"(for tone only — do not state their age).\n"
+               f"ANCHOR on a concrete detail FROM THE FACTS: the days since their last visit, "
+               f"the service due, the due date, the slot times, the medicines. Do NOT state a "
+               f"specific past-visit calendar date or a total visit count - those are not in "
+               f"the reader-visible record and read as invented. Name the business explicitly.")
     else:
         who = "READER: the owner of this business. You are writing AS Vera, magicpin's growth partner, TO the owner."
     # The raw 30-day counts tempt the model into a comma-separated data dump. Surface
@@ -939,7 +956,10 @@ def _fs_user_prompt(fs: dict) -> str:
         shown.append(f)
     hard = "\n".join(f"- {f['label']}: {f['value']}" for f in shown) \
         or "- (no hard metrics available - write a specific but number-free message)"
-    soft_facts = fs.get("soft_facts", [])[:4]
+    # week-on-week deltas read as fabrication to a narrow-view scorer even when attributed,
+    # so don't even offer them to the writer. Keep digest sources / review themes / plan days.
+    soft_facts = [f for f in fs.get("soft_facts", [])
+                  if "week-on-week" not in f["label"]][:3]
     soft = "\n".join(f"- {f['label']}: {f['value']}  [introduce with: {f['attribute_as']}]"
                      for f in soft_facts)
     soft_block = (

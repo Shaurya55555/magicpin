@@ -17,7 +17,11 @@ import time
 from urllib import request as _rq
 
 PROVIDER = os.getenv("LLM_PROVIDER", "groq").lower()
-API_KEY = os.getenv("LLM_API_KEY", "")
+# LLM_API_KEY may be a single key or a comma-separated pool; on a 429/quota error the
+# client advances to the next key. On Vercel a single key is the normal case.
+_KEYS = [k.strip() for k in os.getenv("LLM_API_KEY", "").split(",") if k.strip()]
+API_KEY = _KEYS[0] if _KEYS else ""
+_key_idx = 0
 MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
 FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "openai/gpt-oss-20b")
 # The judge allows 30s per call. Keep the per-request timeout well under that so a
@@ -38,7 +42,17 @@ _ENDPOINTS = {
 
 
 def available() -> bool:
-    return bool(API_KEY) and PROVIDER in _ENDPOINTS
+    return bool(_KEYS) and PROVIDER in _ENDPOINTS
+
+
+def _rotate_key() -> bool:
+    """Advance to the next key in the pool. Returns False if there's only one."""
+    global _key_idx, API_KEY
+    if len(_KEYS) < 2:
+        return False
+    _key_idx = (_key_idx + 1) % len(_KEYS)
+    API_KEY = _KEYS[_key_idx]
+    return True
 
 
 def model_label() -> str:
@@ -83,15 +97,20 @@ def chat(system: str, user: str, *, temperature: float | None = None, max_tokens
         models.append(FALLBACK_MODEL)
     for mi, model in enumerate(models):
         tries = (retries + 1) if mi == 0 else 1
-        for attempt in range(tries):
+        for attempt in range(tries + len(_KEYS)):
             try:
                 out = _one_call(model, system, user, temperature, max_tokens)
                 if out:
                     return out
             except Exception as e:  # noqa: BLE001 — any failure -> retry / fallback / deterministic
                 code = getattr(e, "code", None)
-                if code == 429 and mi < len(models) - 1:
-                    break  # quota hit on this model — jump straight to the fallback model
+                if code == 429:
+                    if _rotate_key():
+                        continue  # try the same call with the next key in the pool
+                    if mi < len(models) - 1:
+                        break     # single key exhausted -> jump to the fallback model
                 if attempt < tries - 1:
                     time.sleep(1.0 * (attempt + 1))
+                if attempt >= tries - 1 and code != 429:
+                    break
     return None
