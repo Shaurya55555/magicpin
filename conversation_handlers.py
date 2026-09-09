@@ -63,10 +63,20 @@ class ConversationState:
 # ---------------------------------------------------------------------------
 
 AUTO_REPLY_PATTERNS = [
-    r"thank you for contacting", r"will respond shortly", r"we('ll| will) get back",
-    r"currently (unavailable|closed|away)", r"automated (assistant|reply|message)",
-    r"business hours", r"team will (reach|respond|contact)", r"shukriya.*team",
-    r"team tak pahuncha", r"aapki jaankari ke liye",
+    r"thank you for contacting", r"thanks for (contacting|reaching out|your message)",
+    r"(will |we'?ll )?respond shortly", r"get back to you shortly", r"we('ll| will) get back",
+    r"currently (unavailable|closed|away)", r"we'?re (currently )?away", r"out of (the )?office",
+    r"automated (assistant|reply|message|response)", r"this is an automated",
+    r"message has been received", r"your message has been", r"received your message",
+    r"during business hours", r"business hours", r"team will (reach|respond|contact|get)",
+    r"our team will", r"shukriya.*team", r"team tak pahuncha", r"aapki jaankari ke liye",
+]
+
+# Off-topic domains Vera should decline rather than attempt (with or without a "?").
+OFFTOPIC_PATTERNS = [
+    r"\bgst\b", r"\bpan\b", r"income tax", r"\btax return\b", r"\bpayroll\b", r"\btds\b",
+    r"file my", r"file the", r"legal (advice|notice|help)", r"\blawsuit\b", r"accounting\b",
+    r"balance sheet", r"loan (application|approval)", r"visa\b", r"passport\b",
 ]
 
 OPTOUT_PATTERNS = [
@@ -111,13 +121,23 @@ def _sentence(s: str) -> str:
 
 
 def _as_plan(offer: str, fallback: str) -> str:
-    """last_offer is usually phrased as a question ('Want me to draft X?') — dropping it
-    into a statement verbatim reads as if we were re-asking the same question. Strip the
-    question-framing so it reads as a stated plan/fact instead."""
-    s = (offer or fallback).strip().rstrip("?").strip()
-    s = re.sub(r"^want me to\s+", "", s, flags=re.IGNORECASE)
+    """last_offer is usually phrased as a question ('Want me to draft X?' / 'Kya aap X
+    karna chahenge?') — dropping it into a statement verbatim reads as if we were
+    re-asking. Strip the question-framing (English and Hinglish) plus trailing
+    yes/no scaffolding so it reads as a stated plan."""
+    s = (offer or fallback).strip()
+    # trailing CTA scaffolding
+    s = re.sub(r"\s*[\(\[]?\s*(yes\s*/\s*no|y\s*/\s*n|✅\s*/\s*❌|yes or no)\s*[\)\]]?\s*$", "", s, flags=re.IGNORECASE)
+    s = s.strip().rstrip("?।.").strip()
+    # English question lead-ins
+    s = re.sub(r"^(want me to|shall i|should i|would you like me to|do you want me to|can i)\s+", "",
+               s, flags=re.IGNORECASE)
     s = re.sub(r"^(recommend:|reply \w+ to)\s+", "", s, flags=re.IGNORECASE)
-    return s or fallback
+    # Hinglish / Hindi question frame:  "kya aap … karna chahenge" -> "… karna"
+    s = re.sub(r"^(kya aap|क्या आप)\s+", "", s, flags=re.IGNORECASE)
+    s = re.sub(r"\s+(karna chahenge|karna chahengi|chahenge|chahengi|karenge|karengi|"
+               r"करना चाहेंगे|करना चाहेंगी|चाहेंगे|चाहेंगी)\s*$", "", s, flags=re.IGNORECASE)
+    return s.strip() or fallback
 
 
 def _dedupe(state: ConversationState, candidate: str) -> str:
@@ -205,7 +225,8 @@ def respond(state: ConversationState, merchant_message: str) -> dict:
     on_topic_hint = bool(re.search(
         r"\b(abstract|draft|post|slot|book|yes|no|price|offer)\b", msg.lower()
     ))
-    if looks_like_question and not on_topic_hint:
+    is_offtopic_domain = _match_any(OFFTOPIC_PATTERNS, msg)
+    if (looks_like_question and not on_topic_hint) or is_offtopic_domain:
         body = _dedupe(state, "That's outside what I can help with directly — best to check with the right specialist for that one. " + (f"Coming back to it: {_as_plan(state.last_offer, '')}." if state.last_offer else "Anything else on the original topic I can help with?"))
         _record_sent(state, body)
         return {"action": "send", "body": body, "cta": "open_ended",
