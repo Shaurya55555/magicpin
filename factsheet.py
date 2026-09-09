@@ -354,8 +354,9 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
 # ---------------------------------------------------------------------------
 _GENERIC_TIME = re.compile(
     r"\b(\d{1,3}\s?(?:min|mins|minute|minutes|hour|hours|hr|hrs|day|days|week|weeks|month|months|"
-    r"km|kms|kilometre|kilometres|kilometer|kilometers)|\d{1,3}\s?/\s?30d\b|\d{1,2}\s?d\b|"
-    r"\d{1,2}\s?h\b|2-min|24h|48h|"
+    r"km|kms|kilometre|kilometres|kilometer|kilometers|"
+    r"din|dino|dinon|hafte|hafta|haftey|mahina|mahine|mahino|saal|ghante|ghanta|ghanto|baje)"
+    r"|\d{1,3}\s?/\s?30d\b|\d{1,2}\s?d\b|\d{1,2}\s?h\b|2-min|24h|48h|"
     r"one|two|three|first|second|third|a couple|"
     r"this week|next week|tomorrow|today|tonight|this month|next month|this weekend|"
     r"mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
@@ -386,10 +387,16 @@ def _metric_value_map(fs: dict) -> dict:
     for f in fs["hard_facts"]:
         if f["label"] in _PERF_LABELS:
             m.setdefault(f["label"], set()).add(_norm_num(f["value"]))
+    # values that are legitimately a review / milestone figure: soft "recent reviews"
+    # facts, plus a trigger payload that is explicitly about reviews or a milestone.
     rv = set()
     for f in fs.get("soft_facts", []):
         if "review" in f["label"].lower():
             rv |= set(re.findall(r"\d[\d,]*", f["value"]))
+    for f in fs["hard_facts"]:
+        lbl = f["label"].lower()
+        if any(w in lbl for w in ("review", "milestone", "value now", "rating count")):
+            rv |= set(re.findall(r"\d[\d,]*", str(f["value"])))
     m["__reviews__"] = {x.replace(",", "") for x in rv}
     return m
 
