@@ -24,6 +24,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Optional, Any
 
+try:
+    import llm_client  # optional — reply bodies fall back to templates if unavailable
+except Exception:  # pragma: no cover
+    llm_client = None
+
 
 @dataclass
 class ConversationState:
@@ -41,6 +46,8 @@ class ConversationState:
     last_merchant_message: str = ""
     ended: bool = False
     suppressed: bool = False
+    committed: bool = False
+    post_end_ack: bool = False
     last_offer: str = ""            # the ask/CTA text from our most recent outbound message
     opening_rationale: str = ""     # why we started this conversation (from the original composed action)
 
@@ -102,7 +109,13 @@ AFFIRMATIVE_PATTERNS = [
 ]
 
 NEGATIVE_PATTERNS = [
-    r"^\s*(no|nah|not now|nope|nahi)\b",
+    r"^\s*(no\b|nah\b|nope\b|nahi\b|no thanks|not interested)",
+]
+
+# soft "not right now" — defer, do NOT close the conversation
+DEFER_PATTERNS = [
+    r"\bnot (right )?now\b", r"\blater\b", r"\bbusy\b", r"\bnext week\b", r"\bsome other time\b",
+    r"\bcan'?t (right )?now\b", r"\bmaybe later\b", r"\bin a bit\b", r"\bbaad mein\b", r"\babhi nahi\b",
 ]
 
 
@@ -161,12 +174,90 @@ def _record_sent(state: ConversationState, body: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# LLM polish for reply bodies — the deterministic machine decides the ACTION and
+# INTENT; this turns the decision into one natural, non-repetitive line. Any
+# failure falls straight back to the template body, so behaviour never depends
+# on the model being up.
+# ---------------------------------------------------------------------------
+_REPLY_SYS = (
+    "You are Vera, magicpin's growth partner, replying to a small-business owner on WhatsApp. "
+    "Write ONE short reply (1-2 sentences, under 30 words), warm and human, never robotic. "
+    "Do NOT invent facts, numbers, offers or dates. Do NOT repeat a line you've already sent. "
+    "Match the owner's language (English / Hindi-English mix). Output only the reply text."
+)
+
+_INTENT_BRIEF = {
+    "auto_reply_1": "Their reply looks automated. Gently note you'll wait for the owner, and restate the one open ask in fresh words.",
+    "commit": "They just said yes / let's do it. Confirm you're on it and state the concrete next step you'll take, in plain words. End by asking them to reply CONFIRM.",
+    "clarify": "They asked a genuine follow-up question about the plan (timing, cost, how it works). Answer it briefly and honestly from what you know, then nudge them to confirm.",
+    "offtopic": "They asked about something outside magicpin growth help (tax, weather, unrelated). Politely say that's not your area, in one line, then bring them back to the open ask.",
+    "affirm": "They agreed. Say you're sending it through now, warmly, and name the next step.",
+    "ack": "Their reply didn't clearly signal yes or no. Acknowledge it and restate the single open ask in fresh words, no new asks.",
+}
+
+
+def _polish(state: ConversationState, intent: str, det_body: str, merchant_msg: str) -> str:
+    if llm_client is None or not getattr(llm_client, "available", lambda: False)():
+        return det_body
+    brief = _INTENT_BRIEF.get(intent)
+    if not brief:
+        return det_body
+    already = " | ".join(list(state.sent_bodies)[-3:])
+    user = (
+        f"OPEN ASK (what we're waiting on): {state.last_offer or 'proceeding with the suggestion'}\n"
+        f"BUSINESS: {(state.merchant or {}).get('identity', {}).get('name', 'their business')}\n"
+        f"OWNER JUST SAID: \"{merchant_msg}\"\n"
+        f"SITUATION: {brief}\n"
+        f"Lines you've ALREADY sent this chat (do not repeat): {already or '(none)'}\n"
+        f"Write the reply."
+    )
+    try:
+        out = llm_client.chat(_REPLY_SYS, user, temperature=0.3, max_tokens=180, try_fallback_model=True)
+    except Exception:
+        out = None
+    if not out:
+        return det_body
+    out = out.strip().strip('"').strip()
+    out = re.sub(r"^(vera|reply|message)\s*[:\-]\s*", "", out, flags=re.I).strip()
+    if 8 <= len(out) <= 320 and out not in state.sent_bodies:
+        return out
+    return det_body
+
+
+# ---------------------------------------------------------------------------
 # Main entrypoint
 # ---------------------------------------------------------------------------
 
+_FOLLOWUP_Q = re.compile(
+    r"\b(when|how (long|soon|much|does|will|do)|what('| i)?s? (the )?(cost|price|next|timeline|catch)|"
+    r"go live|goes? live|start(ing)?|turnaround|by when|which one|what happens|any (fee|charge))\b", re.I)
+
+
+def _send(state, intent, det_body, msg, cta="open_ended"):
+    body = _polish(state, intent, det_body, msg)
+    body = _dedupe(state, body)
+    _record_sent(state, body)
+    return {"action": "send", "body": body, "cta": cta, "rationale": _RATIONALE.get(intent, intent)}
+
+
+_RATIONALE = {
+    "auto_reply_1": "Likely auto-reply (canned phrasing / verbatim repeat) — one explicit prompt for the owner before backing off.",
+    "commit": "Merchant committed ('let's do it') — switched from qualifying to action, no further qualifying questions.",
+    "clarify": "Merchant asked a genuine follow-up about the plan — answered briefly, then nudged to confirm.",
+    "offtopic": "Out-of-scope ask — politely declined and redirected to the open ask without losing the thread.",
+    "affirm": "Merchant accepted the ask — honoured directly rather than re-qualifying.",
+    "ack": "Reply didn't match a clear intent — acknowledged and restated the single open ask, no new ask.",
+}
+
+
 def respond(state: ConversationState, merchant_message: str) -> dict:
     if state.ended:
-        return {"action": "end", "rationale": "Conversation already closed; no further sends."}
+        # one graceful sign-off if they keep messaging a closed thread, then silence
+        if not getattr(state, "post_end_ack", False):
+            state.post_end_ack = True
+            return {"action": "send", "body": "We've wrapped this one up — start a fresh chat any time you need me.",
+                    "cta": "none", "rationale": "Conversation already closed; single graceful sign-off."}
+        return {"action": "end", "body": "", "rationale": "Conversation already closed; no further sends."}
 
     msg = merchant_message or ""
     state.turns.append({"from": "merchant", "message": msg})
@@ -174,77 +265,78 @@ def respond(state: ConversationState, merchant_message: str) -> dict:
     is_repeat_of_last = bool(state.last_merchant_message) and msg.strip() == state.last_merchant_message.strip()
     is_auto_reply_like = _match_any(AUTO_REPLY_PATTERNS, msg) or is_repeat_of_last
     state.last_merchant_message = msg
+    committed = getattr(state, "committed", False)
 
-    # 1. Auto-reply detection ------------------------------------------------
+    # 1. Auto-reply -------------------------------------------------------------
     if is_auto_reply_like:
         state.auto_reply_streak += 1
         if state.auto_reply_streak == 1:
-            body = _dedupe(state, "Looks like an auto-reply 😊 When the owner sees this — " + _sentence(state.last_offer or "just reply YES and I'll go ahead"))
-            _record_sent(state, body)
-            return {"action": "send", "body": body, "cta": "binary",
-                    "rationale": "Detected likely auto-reply (canned phrasing / verbatim repeat). One explicit prompt flagged for the owner before backing off."}
-        elif state.auto_reply_streak == 2:
+            det = "Looks like that came through automatically — no rush. When you're back, " + \
+                  _sentence(_as_plan(state.last_offer, "just reply YES and I'll get started"))
+            return _send(state, "auto_reply_1", det, msg, cta="binary")
+        if state.auto_reply_streak == 2:
             return {"action": "wait", "wait_seconds": 14400,
-                    "rationale": "Same auto-reply pattern twice in a row — owner likely not at phone. Backing off 4 hours before retrying."}
-        else:
-            state.ended = True
-            return {"action": "end",
-                    "rationale": f"Auto-reply {state.auto_reply_streak}x in a row with zero real engagement signal. Closing conversation; suppressing suppression_key for retry cooldown."}
+                    "body": "No worries — looks like you're away. I'll check back later.",
+                    "rationale": "Same auto-reply twice — owner likely away. Backing off 4 hours."}
+        state.ended = True
+        return {"action": "end",
+                "body": "I'll pause here and leave it with you — just reply when you're back and I'll pick it up.",
+                "rationale": f"Auto-reply {state.auto_reply_streak}x with no real engagement — closing, suppression_key on cooldown."}
 
-    # 2. Hostility (checked ahead of plain opt-out — "stop bothering me, useless spam"
-    #    should be characterized as hostility, not a calm opt-out, so the rationale
-    #    matches what the merchant actually said) -----------------------------------
+    # 2. Hostility (before calm opt-out) --------------------------------------
     if _match_any(HOSTILE_PATTERNS, msg):
-        state.ended = True
-        state.suppressed = True
-        return {"action": "end",
-                "rationale": "Merchant frustration/hostility explicit. Closing gracefully without further engagement; suppressing follow-ups for this merchant for a cooldown period."}
+        state.ended = True; state.suppressed = True
+        return {"action": "end", "body": "Understood — I'll stop here. Reach out any time if it's useful later.",
+                "rationale": "Explicit frustration/hostility — closing gracefully, suppressing follow-ups for a cooldown."}
 
-    # 3. Explicit opt-out / hard no ------------------------------------------
+    # 3. Explicit opt-out ----------------------------------------------------
     if _match_any(OPTOUT_PATTERNS, msg):
-        state.ended = True
-        state.suppressed = True
-        return {"action": "end",
-                "rationale": "Merchant explicitly opted out. Closing conversation; suppressing this conversation's suppression_key from future ticks."}
+        state.ended = True; state.suppressed = True
+        return {"action": "end", "body": "No problem, I'll leave it there. Ping me whenever you want to pick this back up.",
+                "rationale": "Explicit opt-out — closing and suppressing this conversation's suppression_key."}
 
-    # 4. Intent transition — switch from pitch/qualify mode to action mode ---
+    # 4. Commitment — switch to action, never re-qualify --------------------
     if _match_any(INTENT_TRANSITION_PATTERNS, msg):
+        state.committed = True
         next_step = _as_plan(state.last_offer, "the next step")
-        body = _dedupe(state, f"Great — here's the plan: {next_step}. Reply CONFIRM and I'll send it through.")
-        _record_sent(state, body)
-        state.last_offer = "confirming and sending the draft"
-        return {"action": "send", "body": body, "cta": "binary",
-                "rationale": "Merchant explicitly committed ('let's do it' / equivalent). Switching immediately from qualifying to action — no further qualifying questions, per the intent-handoff rule."}
+        det = f"On it — I'll {next_step} and send it over for your approval. Reply CONFIRM and it's done."
+        state.last_offer = f"confirming so I can send {next_step}"
+        return _send(state, "commit", det, msg, cta="binary")
 
-    # 5. Curveball / off-topic ask --------------------------------------------
-    # NOTE: word-boundary matching is required here — a naive substring check
-    # (e.g. "no" in msg.lower()) false-positives on "do you KNOw", "post" inside
-    # "impossible", etc., which would wrongly route a real curveball into the
-    # generic fallback instead of the off-topic redirect.
+    # 5. Genuine follow-up question about the plan (post-pitch) -------------
+    if "?" in msg and _FOLLOWUP_Q.search(msg) and not _match_any(OFFTOPIC_PATTERNS, msg):
+        det = "Usually within a day of you confirming. " + \
+              _sentence("Reply CONFIRM and I'll " + _as_plan(state.last_offer, "get it moving"))
+        return _send(state, "clarify", det, msg, cta="binary")
+
+    # 6. Off-topic / out-of-scope -----------------------------------------
     looks_like_question = "?" in msg
-    on_topic_hint = bool(re.search(
-        r"\b(abstract|draft|post|slot|book|yes|no|price|offer)\b", msg.lower()
-    ))
-    is_offtopic_domain = _match_any(OFFTOPIC_PATTERNS, msg)
-    if (looks_like_question and not on_topic_hint) or is_offtopic_domain:
-        body = _dedupe(state, "That's outside what I can help with directly — best to check with the right specialist for that one. " + (f"Coming back to it: {_as_plan(state.last_offer, '')}." if state.last_offer else "Anything else on the original topic I can help with?"))
-        _record_sent(state, body)
-        return {"action": "send", "body": body, "cta": "open_ended",
-                "rationale": "Off-topic/out-of-scope ask politely declined; redirected back to the original trigger without losing the thread."}
+    on_topic = bool(re.search(r"\b(abstract|draft|post|slot|book|yes|no|price|offer|listing|review|promo|campaign)\b", msg.lower()))
+    if (looks_like_question and not on_topic) or _match_any(OFFTOPIC_PATTERNS, msg):
+        det = "That one's outside what I can help with — worth asking the right specialist. " + \
+              (f"Back to us: {_as_plan(state.last_offer, 'shall I go ahead?')}." if state.last_offer else "Anything on the growth side I can help with?")
+        return _send(state, "offtopic", det, msg, cta="open_ended")
 
-    # 6. Generic affirmative — advance with the promised next step ------------
+    # 7. Affirmative -----------------------------------------------------
     if _match_any(AFFIRMATIVE_PATTERNS, msg):
-        body = _dedupe(state, "Sending that through now — " + _sentence(_as_plan(state.last_offer, "will follow up shortly")))
-        _record_sent(state, body)
-        return {"action": "send", "body": body, "cta": "open_ended",
-                "rationale": "Merchant accepted the prior ask; honoring it directly rather than re-qualifying."}
+        det = "Great — sending that through now: " + _sentence(_as_plan(state.last_offer, "I'll follow up shortly"))
+        return _send(state, "affirm", det, msg, cta="open_ended")
 
+    # 8a. Soft "not right now" — defer, keep the thread open ----------------
+    if _match_any(DEFER_PATTERNS, msg):
+        det = "No problem — I'll check back in a few days. " + \
+              _sentence("Reply here any time and I'll pick up " + _as_plan(state.last_offer, "where we left off"))
+        r = _send(state, "ack", det, msg, cta="none")
+        r["action"] = "wait"; r["wait_seconds"] = 172800
+        r["rationale"] = "Merchant asked to defer ('not now' / 'later') — holding, not closing."
+        return r
+
+    # 8b. Explicit no ----------------------------------------------------
     if _match_any(NEGATIVE_PATTERNS, msg):
         state.ended = True
-        return {"action": "end", "rationale": "Merchant declined the ask. Exiting gracefully rather than re-pitching."}
+        return {"action": "end", "body": "Got it, no worries. I'll leave this one — here if you change your mind.",
+                "rationale": "Merchant declined — exiting gracefully rather than re-pitching."}
 
-    # 7. Fallback: acknowledge + restate the single open ask -------------------
-    body = _dedupe(state, "Noted — " + _sentence(state.last_offer or "let me know if you'd like to proceed"))
-    _record_sent(state, body)
-    return {"action": "send", "body": body, "cta": "open_ended",
-            "rationale": "Reply didn't match a known intent signal; acknowledging and restating the single open ask without adding a new one."}
+    # 9. Fallback: acknowledge + restate the single open ask --------------
+    det = "Noted. " + _sentence(_as_plan(state.last_offer, "let me know if you'd like me to go ahead"))
+    return _send(state, "ack", det, msg, cta="open_ended")

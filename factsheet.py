@@ -86,7 +86,9 @@ _LEVER_BY_KIND = {
 # Per-trigger message strategy — NOT a planner, just a direction for the writer:
 # what this message is FOR (objective) and what its first sentence should hang on (hook).
 _KIND_STRATEGY = {
-    "competitor_opened":     ("protect the merchant's lunch/booking traffic from the new competitor",
+    "competitor_opened":     ("help the merchant decide whether to sharpen their own offer in response - "
+                              "if the competitor undercuts on price, the recommendation is to consider a "
+                              "keener offer this week, not to sit on the current one",
                               "the competitor: who, how close, their price vs the merchant's"),
     "perf_dip":              ("get the merchant to let Vera diagnose and act on the drop",
                               "the exact current performance number and that it has fallen"),
