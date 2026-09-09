@@ -540,16 +540,45 @@ def validate_output(body: str, fs: dict) -> tuple[bool, str]:
     if mj:
         return False, f"jargon leak: {mj.group(0)!r}"
 
-    hay = " ".join(_norm_num(f["value"]) for f in fs["hard_facts"] + fs["soft_facts"])
-    # a soft fact's attribution phrase ("per JIDA Oct 2026 p.14", the circular's date) is
-    # also legitimately citable — fold it into the haystack
-    hay += " " + " ".join(_norm_num(f.get("attribute_as", "")) for f in fs["soft_facts"])
-    hay += " " + _norm_num(fs.get("locality", "")) + " " + _norm_num(fs.get("biz_name", "")) + " 2026 2027"
+    # Grounded numbers as a TOKEN SET (not a substring haystack): "200" must not be
+    # accepted just because "1200" or "3200" is a real figure somewhere.
+    def _num_tokens(s: str) -> set:
+        return {x.replace(",", "").rstrip(".") for x in re.findall(r"\d[\d,]*\.?\d*", str(s)) if x.strip("., ")}
+
+    grounded = set()
+    for f in fs["hard_facts"] + fs["soft_facts"]:
+        grounded |= _num_tokens(f["value"])
+    for f in fs["soft_facts"]:
+        grounded |= _num_tokens(f.get("attribute_as", ""))   # "per JIDA Oct 2026 p.14", a circular date
+    grounded |= _num_tokens(fs.get("locality", "")) | _num_tokens(fs.get("biz_name", ""))
+    grounded |= {"2026", "2027"}
+    for g in list(grounded):                # accept equivalent forms: 3% <-> 0.03, 40.0 <-> 40
+        try:
+            fv = float(g)
+        except ValueError:
+            continue
+        if 0 < fv < 1:
+            grounded.add(f"{fv * 100:g}")
+        grounded.add(f"{fv:g}")
+
+    def _grounded(n: str) -> bool:
+        if n in grounded:
+            return True
+        try:
+            return f"{float(n):g}" in grounded
+        except ValueError:
+            return False
+
+    # dates: a long specific token, so a plain substring check against the raw fact text
+    # is safe here (unlike bare numbers)
+    date_hay = " ".join(str(f["value"]) for f in fs["hard_facts"] + fs["soft_facts"]).lower()
+    date_hay += " " + " ".join(str(f.get("attribute_as", "")) for f in fs["soft_facts"]).lower()
 
     scrubbed = _GENERIC_TIME.sub(" ", body)
 
     for m in _DATE.finditer(scrubbed):
-        if _norm_num(m.group(0)) not in hay:
+        d = m.group(0).lower().strip()
+        if d not in date_hay and _norm_num(d) not in _norm_num(date_hay):
             return False, f"unverified date {m.group(0)!r}"
 
     # A number must never be attached to the wrong metric (checked for every message,
@@ -582,6 +611,6 @@ def validate_output(body: str, fs: dict) -> tuple[bool, str]:
                 pass
         # ₹ amounts and percentages must be grounded even inside a drafted artifact —
         # the merchant reads a price as a real commitment, not "structure".
-        if n not in hay:
+        if not _grounded(n):
             return False, f"unverified {'price' if is_money else 'percentage' if is_pct else 'number'} {tok!r}"
     return True, "ok"
