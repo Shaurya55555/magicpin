@@ -533,19 +533,39 @@ def _mf_generic(category, merchant, trigger, payload):
         if len(concrete_bits) >= 2:
             break
 
+    # A grounded, judgement-free TOPIC for the message (never a claimed direction like
+    # "your numbers are up" — that would be fabrication when the payload is thin).
+    kind = trigger.get("kind", "")
+    topic = {
+        "dormant_with_vera": "picking our conversation back up",
+        "winback_eligible": "picking our conversation back up",
+        "renewal_due": "your magicpin plan",
+        "festival_upcoming": "planning ahead for the festive season",
+        "category_seasonal": "the seasonal demand shift in your category",
+        "milestone_reached": "the growth you've built so far",
+        "perf_spike": "your recent listing numbers",
+        "perf_dip": "your recent listing numbers",
+        "seasonal_perf_dip": "your usual seasonal pattern",
+        "competitor_opened": "the local competitive picture",
+        "research_digest": f"this week's {category.get('slug', 'category')} update",
+        "review_theme_emerged": "a pattern in your recent reviews",
+        "gbp_unverified": "your Google listing setup",
+        "milestone": "the growth you've built so far",
+    }.get(kind, "your listing")
+
     perf = _g(merchant, "performance", default={}) or {}
     if concrete_bits:
-        facts = [f"Quick note for {biz_name(merchant)} — {', '.join(concrete_bits)}."]
+        facts = [f"Quick note on {topic} for {biz_name(merchant)} — {', '.join(concrete_bits)}."]
     elif perf.get("views") is not None:
-        facts = [f"Checking in on {biz_name(merchant)} — {perf.get('views')} views and "
-                 f"{perf.get('calls', '?')} calls in the last 30 days, worth a quick look at what's next."]
+        facts = [f"Wanted to touch base on {topic} for {biz_name(merchant)}: "
+                 f"{perf.get('views')} views in the last 30 days."]
     else:
-        facts = [f"Checking in on how things are going at {biz_name(merchant)}."]
+        facts = [f"Wanted to touch base on {topic} for {biz_name(merchant)}."]
 
-    cta_en = "Want me to look into this and come back with a specific recommendation?"
+    cta_en = "Want me to dig in and come back with a specific recommendation?"
     cta_hi = "Isko dekh ke aapko specific recommendation bhej doon?"
     cta_type = "binary_yes_no" if urgency >= 3 else "open_ended"
-    return facts, cta_en, cta_hi, cta_type, ["specificity (available fields)", "restraint on thin trigger data"], ""
+    return facts, cta_en, cta_hi, cta_type, ["grounded topic on thin trigger data", "restraint"], ""
 
 
 # ---------------------------------------------------------------------------
@@ -842,6 +862,12 @@ _LLM_SYSTEM = (
     "You are Vera, magicpin's AI growth partner for small local businesses in India "
     "(dentists, salons, restaurants, gyms, pharmacies). You write ONE short outbound "
     "WhatsApp-style message.\n\n"
+    "THREE THINGS PEOPLE GET WRONG - do not:\n"
+    "  a) invent a freebie, gift, discount, or 'saved spot' that isn't in the ACTIVE OFFER "
+    "facts. An appointment or refill reminder just confirms the appointment or refill.\n"
+    "  b) open with a raw statistic. The first sentence is the REASON you're writing now "
+    "(the WHY NOW), addressed to the person by name.\n"
+    "  c) stack numbers. Two at most in the whole message.\n\n"
     "ABSOLUTE RULES:\n"
     "1. VERIFIED FACTS may be stated plainly. ATTRIBUTED FACTS are also real, but you must "
     "introduce each one with its given attribution phrase (e.g. 'your dashboard shows', "
@@ -863,16 +889,25 @@ _LLM_SYSTEM = (
     "6. Exactly ONE call to action of the given type. binary => a single yes/no or CONFIRM step. "
     "open_ended => one short low-effort question. none => no ask, just the insight.\n"
     "7. If ARTIFACT is yes, include the actual drafted thing (the pricing tiers / the post text / "
-    "the message copy) inside the message, not a promise to send it later.\n"
+    "the message copy) inside the message, not a promise to send it later. A draft may lay out "
+    "STRUCTURE (tier labels, session counts, a schedule) but must NOT invent a rupee price, a "
+    "percentage discount, or a minimum-order value that isn't in the facts - reuse a real "
+    "listed price or leave it as 'price to confirm'. Do not restate the same figures in both "
+    "the lead-in sentence and the draft - state each number once.\n"
     "8. Match the VOICE. Avoid the TABOO words entirely.\n"
     "9. If CODE-SWITCH is yes, mix natural Hindi-English the way an Indian shop owner texts.\n"
     "10. No internal jargon (never write 'trigger', 'payload', 'signal', 'CTR', 'the system'). "
     "Say 'click rate' not 'CTR'.\n"
-    "11. 2 to 4 sentences (a drafted artifact may be longer). No 'Hi/Hello' beyond the name, "
-    "no sign-off, no subject line. Output only the message text.\n"
-    "12. Lead with ONE sharp number - the one that makes the WHY NOW land - and at most one "
-    "more. Never write a comma-separated list of metrics ('X views, Y calls, Z leads...'); "
-    "that reads as a report, not a message. Unused facts stay unused."
+    "11. 2 to 3 sentences, under ~45 words (a drafted artifact may be longer). No 'Hi/Hello' "
+    "beyond the name, no sign-off, no subject line. Output only the message text.\n"
+    "12. Use exactly ONE numeric metric. A second number is allowed ONLY when the trigger "
+    "itself needs it to make sense (a competitor's price vs yours; a before/after). Never "
+    "three. Never a comma-separated metric list ('X views, Y calls, Z leads...'). A drafted "
+    "artifact's own tier list is exempt from this count. Do not mention a metric just because "
+    "it is in the FACTS - use it only if removing it would weaken the recommendation.\n"
+    "13. Message shape: (1) one hook = the WHY NOW, (2) one supporting fact, (3) one business "
+    "implication, (4) one CTA. Don't try to prove you know everything about this business - "
+    "prove you noticed the one thing that matters right now."
 )
 
 
@@ -886,11 +921,21 @@ def _fs_user_prompt(fs: dict) -> str:
                f"(for tone only — do not state their age).")
     else:
         who = "READER: the owner of this business. You are writing AS Vera, magicpin's growth partner, TO the owner."
-    # The four raw 30-day counts tempt the model into a comma-separated data dump. Show
-    # the two headline ones (views, calls); keep the rest available to the validator only.
-    _RAW = {"views in last 30 days", "direction requests in last 30 days", "leads in last 30 days"}
-    shown = [f for f in fs["hard_facts"]
-             if f["label"] not in _RAW or f["label"] == "views in last 30 days"]
+    # The raw 30-day counts tempt the model into a comma-separated data dump. Surface
+    # ONE headline count (whichever metric the trigger is about, else views); keep the
+    # rest available to the validator only. Offers, signals and payload facts stay.
+    _RAW = {"views in last 30 days", "calls in last 30 days",
+            "direction requests in last 30 days", "leads in last 30 days"}
+    kind = fs.get("kind", "")
+    _keep_metric = {"perf_dip": "calls in last 30 days", "perf_spike": "calls in last 30 days",
+                    "dormant_with_vera": "calls in last 30 days"}.get(kind, "views in last 30 days")
+    shown, raw_seen = [], False
+    for f in fs["hard_facts"]:
+        if f["label"] in _RAW:
+            if f["label"] == _keep_metric and not raw_seen:
+                shown.append(f); raw_seen = True
+            continue
+        shown.append(f)
     hard = "\n".join(f"- {f['label']}: {f['value']}" for f in shown) \
         or "- (no hard metrics available - write a specific but number-free message)"
     soft_facts = fs.get("soft_facts", [])[:4]
@@ -959,21 +1004,27 @@ def _llm_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[
     user = _fs_user_prompt(fs)
 
     body = None
+    reject_reason = ""
     for attempt in range(2):
         sys_prompt = _LLM_SYSTEM
         if attempt == 1:
-            sys_prompt += ("\n\nYOUR LAST ATTEMPT USED A NUMBER OR DATE THAT IS NOT IN THE FACTS "
-                           "BLOCK. Rewrite using ONLY facts listed. If you have no number to cite, "
-                           "write a specific-but-number-free message instead.")
-        raw = llm_client.chat(sys_prompt, user, temperature=0.4 if attempt == 0 else 0.15,
-                              max_tokens=1200)
+            sys_prompt += ("\n\nYOUR LAST ATTEMPT FAILED THE FABRICATION CHECK: " + reject_reason +
+                           ". Rewrite using ONLY the facts listed, each number attached to its "
+                           "correct metric. If you have no number to cite, write a "
+                           "specific-but-number-free message instead.")
+        # Attempt 0 is temperature 0 (deterministic primary path, per the brief). The
+        # rare recovery attempt uses a little temperature so it can actually escape
+        # whatever the validator rejected. Retry stays on the primary model so the
+        # two-attempt worst case stays well inside the 30s judge budget.
+        raw = llm_client.chat(sys_prompt, user, temperature=0.0 if attempt == 0 else 0.3,
+                              max_tokens=1200, try_fallback_model=(attempt == 0))
         if not raw:
             # The client already retried with backoff; a None here means the provider is
             # genuinely unavailable right now. Don't retry-storm — hand off to the
             # deterministic engine immediately.
             return None
         cand = sanitize_taboos(_clean_llm_body(raw), taboos)
-        ok, why = factsheet.validate_output(cand, fs)
+        ok, reject_reason = factsheet.validate_output(cand, fs)
         if ok:
             body = cand
             break
@@ -982,14 +1033,12 @@ def _llm_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[
         return None
 
     body = re.sub(r"\s{2,}", " ", body).strip()
-    used = _referenced_fact_labels(body, fs)
     rationale = (
-        f"{fs['scope'].capitalize()}-facing {fs['kind']} for {fs['biz_name']} ({fs['category_slug']}). "
-        f"Why now: {fs['why_now']}. Lever: {fs['lever']}. "
-        f"Grounded facts used: {', '.join(used) if used else 'merchant identity only'}. "
+        f"Chose {fs['kind']} for {fs['biz_name']}: {fs['why_now']}. "
+        f"Leaning on {fs['lever']}; {fs['cta_type']} CTA. "
         f"{'Drafted artifact included. ' if fs['artifact_expected'] else ''}"
-        f"send_as={fs['send_as']}; code_switch={fs['code_switch']}. "
-        f"(LLM composer, validated no-fabrication; model={llm_client.model_label()})"
+        f"({fs['scope']}-facing, {'code-switched ' if fs['code_switch'] else ''}"
+        f"LLM copy validated against the fact sheet; model={llm_client.model_label()})"
     )
     return {
         "body": body,

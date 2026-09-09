@@ -20,7 +20,11 @@ PROVIDER = os.getenv("LLM_PROVIDER", "groq").lower()
 API_KEY = os.getenv("LLM_API_KEY", "")
 MODEL = os.getenv("LLM_MODEL", "openai/gpt-oss-120b")
 FALLBACK_MODEL = os.getenv("LLM_FALLBACK_MODEL", "openai/gpt-oss-20b")
-TIMEOUT = float(os.getenv("LLM_TIMEOUT", "30"))
+# The judge allows 30s per call. Keep the per-request timeout well under that so a
+# slow provider degrades to the deterministic renderer instead of blowing the budget.
+TIMEOUT = float(os.getenv("LLM_TIMEOUT", "7"))
+# Brief requires deterministic behaviour (temperature 0 equivalent). Overridable, but 0 by default.
+TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0"))
 # gpt-oss / qwen3 on Groq are reasoning models: without this the reasoning trace can
 # eat the whole max_tokens budget and leave message.content empty.
 REASONING_EFFORT = os.getenv("LLM_REASONING_EFFORT", "low")
@@ -64,13 +68,22 @@ def _one_call(model: str, system: str, user: str, temperature: float, max_tokens
     return (data["choices"][0]["message"].get("content") or "").strip() or None
 
 
-def chat(system: str, user: str, *, temperature: float = 0.35, max_tokens: int = 1200,
-         retries: int = 2) -> str | None:
+def chat(system: str, user: str, *, temperature: float | None = None, max_tokens: int = 1200,
+         retries: int = 1, try_fallback_model: bool = True) -> str | None:
+    """One composition's worth of generation. Bounded cost: at most
+    (retries+1) tries on the primary model, plus one try on the fallback model.
+    With TIMEOUT=7 and retries=1 that is ~21s worst case, inside the 30s judge budget;
+    the common case is a single ~2s call."""
     if not available():
         return None
-    models = [MODEL] + ([FALLBACK_MODEL] if FALLBACK_MODEL and FALLBACK_MODEL != MODEL else [])
+    if temperature is None:
+        temperature = TEMPERATURE
+    models = [MODEL]
+    if try_fallback_model and FALLBACK_MODEL and FALLBACK_MODEL != MODEL:
+        models.append(FALLBACK_MODEL)
     for mi, model in enumerate(models):
-        for attempt in range(retries + 1):
+        tries = (retries + 1) if mi == 0 else 1
+        for attempt in range(tries):
             try:
                 out = _one_call(model, system, user, temperature, max_tokens)
                 if out:
@@ -79,6 +92,6 @@ def chat(system: str, user: str, *, temperature: float = 0.35, max_tokens: int =
                 code = getattr(e, "code", None)
                 if code == 429 and mi < len(models) - 1:
                     break  # quota hit on this model — jump straight to the fallback model
-                if attempt < retries:
-                    time.sleep((4 if code == 429 else 1.5) * (attempt + 1))
+                if attempt < tries - 1:
+                    time.sleep(1.0 * (attempt + 1))
     return None

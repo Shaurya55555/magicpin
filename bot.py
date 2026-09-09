@@ -201,6 +201,33 @@ def _is_expired(trigger: dict, now_iso: str) -> bool:
         return False
 
 
+# Customer-facing sends respect the consent the customer actually granted.
+# Transactional reminders (they have a booking / an active prescription with us) turn on
+# `reminder_opt_in`; marketing re-engagement needs an explicit marketing/win-back scope.
+_TRANSACTIONAL_KINDS = {"recall_due", "chronic_refill_due", "appointment_tomorrow", "trial_followup"}
+_MARKETING_SCOPES = {
+    "customer_lapsed_soft": {"winback_offers", "promotional_offers"},
+    "customer_lapsed_hard": {"winback_offers", "promotional_offers"},
+    "wedding_package_followup": {"bridal_package_followup", "promotional_offers", "treatment_followup"},
+}
+
+
+def _customer_consent_ok(customer: dict, kind: str) -> bool:
+    """Missing consent data => allow (don't over-block on absent fields)."""
+    if not customer:
+        return True
+    prefs = customer.get("preferences") or {}
+    if kind in _TRANSACTIONAL_KINDS:
+        return prefs.get("reminder_opt_in") is not False
+    need = _MARKETING_SCOPES.get(kind)
+    if not need:
+        return True  # not a gated kind
+    scope = (customer.get("consent") or {}).get("scope")
+    if not scope:
+        return prefs.get("reminder_opt_in") is not False  # no explicit scope list -> fall back to the opt-in flag
+    return bool(need & set(scope))
+
+
 # ---------------------------------------------------------------------------
 # GET /v1/healthz
 # ---------------------------------------------------------------------------
@@ -343,6 +370,9 @@ async def tick(body: TickBody):
             customer = _get("customer", trigger["customer_id"])
             if not customer:
                 continue  # can't compose a customer-facing message without the customer context
+            if not _customer_consent_ok(customer, trigger.get("kind", "")):
+                _suppress(trigger.get("suppression_key", trigger.get("id", "")))
+                continue  # customer hasn't consented to this kind of outreach — stay silent
 
         composed = composer.compose(category, merchant, trigger, customer)
 
@@ -415,6 +445,19 @@ async def reply(body: ReplyBody):
             customer_id=body.customer_id,
             merchant=merchant,
         )
+
+    # Fresh context can be pushed mid-conversation during the replay phase — rehydrate
+    # the snapshot from the latest stored versions so a reply reasons over current data.
+    latest_m = _get("merchant", state.merchant_id)
+    if latest_m:
+        state.merchant = latest_m
+        latest_c = _get("category", latest_m.get("category_slug", ""))
+        if latest_c:
+            state.category = latest_c
+    if state.customer_id:
+        latest_cu = _get("customer", state.customer_id)
+        if latest_cu:
+            state.customer = latest_cu
 
     result = ch_respond(state, body.message)
     if result.get("action") == "end":

@@ -219,7 +219,13 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
         for pk, pv in (payload or {}).items():
             if _skip_payload_key(pk) or not _present(pv):
                 continue
-            H(pk.replace("_", " "), _humanize_value(pv))
+            label = pk.replace("_", " ")
+            if pk.endswith(("_pct", "_percent", "_pc")) and isinstance(pv, (int, float)):
+                # e.g. estimated_uplift_pct: 0.3  ->  "estimated uplift: +30%"
+                label = re.sub(r"\s*(pct|percent|pc)$", "", label).strip()
+                H(label, _pct(pv))
+            else:
+                H(label, _humanize_value(pv))
 
     # active offers (both scopes) — titles carry the ₹ amounts the judge can see
     def _emit_offers():
@@ -348,7 +354,8 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
 # ---------------------------------------------------------------------------
 _GENERIC_TIME = re.compile(
     r"\b(\d{1,3}\s?(?:min|mins|minute|minutes|hour|hours|hr|hrs|day|days|week|weeks|month|months|"
-    r"km|kms|kilometre|kilometres|kilometer|kilometers)|\d{1,2}\s?h\b|2-min|24h|48h|"
+    r"km|kms|kilometre|kilometres|kilometer|kilometers)|\d{1,3}\s?/\s?30d\b|\d{1,2}\s?d\b|"
+    r"\d{1,2}\s?h\b|2-min|24h|48h|"
     r"one|two|three|first|second|third|a couple|"
     r"this week|next week|tomorrow|today|tonight|this month|next month|this weekend|"
     r"mon|tue|wed|thu|fri|sat|sun|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
@@ -368,9 +375,95 @@ def _norm_num(s: str) -> str:
     return s.lower().replace("₹", "").replace(",", "").replace(" ", "").replace("%", "").strip(" .+-")
 
 
+_PERF_LABELS = {"views in last 30 days", "calls in last 30 days", "leads in last 30 days",
+                "direction requests in last 30 days", "listing click rate"}
+
+
+def _metric_value_map(fs: dict) -> dict:
+    """Only the confusable performance metrics — payload numbers (a milestone target,
+    a competitor distance) are not 'metrics' that can be mislabelled this way."""
+    m = {}
+    for f in fs["hard_facts"]:
+        if f["label"] in _PERF_LABELS:
+            m.setdefault(f["label"], set()).add(_norm_num(f["value"]))
+    rv = set()
+    for f in fs.get("soft_facts", []):
+        if "review" in f["label"].lower():
+            rv |= set(re.findall(r"\d[\d,]*", f["value"]))
+    m["__reviews__"] = {x.replace(",", "") for x in rv}
+    return m
+
+
+_MISLABEL_WORD = {
+    "views in last 30 days": r"views?",
+    "calls in last 30 days": r"calls?",
+    "leads in last 30 days": r"leads?",
+    "direction requests in last 30 days": r"directions?(?:\s+requests?)?",
+    "listing click rate": r"click[- ]?(?:rate|through)",
+    "__reviews__": r"reviews?",
+}
+
+# Phrases that promise the recipient a freebie / gift / gesture.
+_PHANTOM_OFFER = re.compile(
+    r"\bas a (?:thank[- ]?you|gift|treat|token)\b|\bwe[''’]?ll (?:add|throw in|include|gift)\b|"
+    r"\bon (?:us|the house)\b|\bspecial (?:gift|treat|surprise|thank[- ]?you)\b|"
+    r"\bcomplimentary\s+\w+|"
+    r"\bfree\s+(?!home\s+delivery|consultation\b|for\b|to\b|of\b|trial\b|body\b)\w+",
+    re.IGNORECASE)
+
+
+def _phantom_offer_check(body: str, fs: dict) -> tuple[bool, str]:
+    """Reject an invented freebie/gift/gesture ('complimentary hair mask', 'as a
+    thank-you we've saved a spot'). Allowed only if a real active offer actually is
+    free/complimentary."""
+    m = _PHANTOM_OFFER.search(body)
+    if not m:
+        return True, "ok"
+    offers = " ".join(f["value"].lower() for f in fs["hard_facts"]
+                      if f["label"] == "active offer running")
+    if "free" in offers or "complimentary" in offers or "@ ₹0" in offers or "@ rs 0" in offers:
+        # a real free offer exists — make sure the phrase points at it, roughly
+        tail = body[m.start():m.start() + 40].lower()
+        if any(w in offers for w in re.findall(r"[a-z]{4,}", tail)):
+            return True, "ok"
+    return False, f"invented freebie/gesture: {m.group(0)!r}"
+
+
+def _semantic_metric_check(body: str, fs: dict) -> tuple[bool, str]:
+    """Catch a real number attached to the WRONG metric — e.g. the views count written
+    as 'reviews', or the leads count as 'calls'. Fires only on tight
+    'NUMBER<space>metric-word' adjacency (plus 'click rate is N%'), so a correct
+    sentence like '2410 views and a 4% click rate' is never flagged."""
+    vmap = _metric_value_map(fs)
+
+    def _flag(val, word, label):
+        val = val.replace(",", "").rstrip(".")
+        if not val:
+            return None
+        owners = {k for k, vs in vmap.items() if val in vs}
+        if owners and label not in owners:
+            right = next((k for k in owners if k != "__reviews__"), "another metric")
+            return f"metric mislabel: {val!r} written as '{word}' but it is the {right} figure"
+        return None
+
+    for label, word in _MISLABEL_WORD.items():
+        for m in re.finditer(rf"(\d[\d,]*\.?\d*)\s*%?\s+{word}\b", body, re.I):  # "88 calls", "2% click rate"
+            msg = _flag(m.group(1), word, label)
+            if msg:
+                return False, msg
+    # the one reversed phrasing worth checking: "click rate is/of/at N%"
+    for m in re.finditer(r"click[- ]?(?:rate|through)\s+(?:is|of|at|around|sits at|=|:)?\s*(\d[\d,]*\.?\d*)\s*%", body, re.I):
+        msg = _flag(m.group(1), "click rate", "listing click rate")
+        if msg:
+            return False, msg
+    return True, "ok"
+
+
 def validate_output(body: str, fs: dict) -> tuple[bool, str]:
     if not body or len(body.strip()) < 25:
         return False, "empty/too short"
+    # LLMs love the unicode hyphen/dash — normalise so date & number checks can't be bypassed
+    body = body.translate({0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2013: "-", 0x2014: "-", 0x2212: "-"})
     low = body.lower()
     for j in _JARGON:
         if j in low:
@@ -380,6 +473,9 @@ def validate_output(body: str, fs: dict) -> tuple[bool, str]:
         return False, f"jargon leak: {mj.group(0)!r}"
 
     hay = " ".join(_norm_num(f["value"]) for f in fs["hard_facts"] + fs["soft_facts"])
+    # a soft fact's attribution phrase ("per JIDA Oct 2026 p.14", the circular's date) is
+    # also legitimately citable — fold it into the haystack
+    hay += " " + " ".join(_norm_num(f.get("attribute_as", "")) for f in fs["soft_facts"])
     hay += " " + _norm_num(fs.get("locality", "")) + " " + _norm_num(fs.get("biz_name", "")) + " 2026 2027"
 
     scrubbed = _GENERIC_TIME.sub(" ", body)
@@ -388,24 +484,36 @@ def validate_output(body: str, fs: dict) -> tuple[bool, str]:
         if _norm_num(m.group(0)) not in hay:
             return False, f"unverified date {m.group(0)!r}"
 
-    # When the message is SUPPOSED to contain a drafted artifact (a pricing proposal, a
-    # post the merchant will edit), invented tier prices/counts are the deliverable, not
-    # fabrication — the merchant is told it's a draft. Still enforce the no-jargon and
-    # no-unverified-date rules above; just don't police every rupee figure.
-    if fs.get("artifact_expected"):
-        return True, "ok (artifact - numbers allowed as draft content)"
+    # A number must never be attached to the wrong metric (checked for every message,
+    # artifact or not).
+    ok, why = _semantic_metric_check(body, fs)
+    if not ok:
+        return False, why
+
+    ok, why = _phantom_offer_check(body, fs)
+    if not ok:
+        return False, why
+
+    artifact = fs.get("artifact_expected")
 
     for m in _NUM.finditer(scrubbed):
         tok = m.group(0).strip()
         n = _norm_num(tok)
         if not n or not any(c.isdigit() for c in n):
             continue
-        if "%" not in tok and "₹" not in tok and "." not in n:
+        is_money = "₹" in tok
+        is_pct = "%" in tok
+        if not is_money and not is_pct and "." not in n:
             try:
-                if float(n) <= 3:
+                v = float(n)
+                if v <= 3:
                     continue  # structural small integer ("2 slots", "3 posts")
+                if artifact:
+                    continue  # inside a draft, a bare count/quantity is draft structure
             except ValueError:
                 pass
+        # ₹ amounts and percentages must be grounded even inside a drafted artifact —
+        # the merchant reads a price as a real commitment, not "structure".
         if n not in hay:
-            return False, f"unverified number {tok!r}"
+            return False, f"unverified {'price' if is_money else 'percentage' if is_pct else 'number'} {tok!r}"
     return True, "ok"
