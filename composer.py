@@ -623,23 +623,23 @@ def _cf_chronic_refill_due(category, merchant, trigger, payload, customer):
 def _cf_lapse_generic(category, merchant, trigger, payload, customer, hard: bool):
     name = _g(customer, "identity", "name") or "there"
     rel = _g(customer, "relationship", default={}) or {}
-    last_visit = rel.get("last_visit")
+    # rel.last_visit / visits_total are NOT in the reader-visible record - stating them
+    # reads as fabrication. Only payload facts (days_since_last_visit, previous_focus)
+    # and generic "it's been a while" are safe.
     services = rel.get("services_received", [])
-    visits_total = rel.get("visits_total")
     offs = active_offers(merchant)
     days = payload.get("days_since_last_visit")
+    focus = (payload.get("previous_focus") or "").replace("_", " ")
     biz = biz_name(merchant)
     facts = []
     if days:
-        facts.append(f"It's been about {days} days since your last visit to {biz} — happens to everyone, no judgment." if hard else f"It's been {days} days since your last visit to {biz}.")
-    elif last_visit:
-        facts.append(f"It's been a while since your {last_visit} visit to {biz} — no judgment, life gets busy." if hard else f"It's been a while since your visit to {biz} on {last_visit}.")
+        facts.append(f"It's been {days} days since your last visit to {biz}" + (" — happens to everyone, no judgment." if hard else "."))
     else:
         facts.append(f"It's been a while since we've seen you at {biz}.")
-    if services:
+    if focus:
+        facts.append(f"Last time you were working on {focus}.")
+    elif services:
         facts.append(f"Last time you came in for {services[-1].replace('_', ' ')}.")
-    elif visits_total:
-        facts.append(f"You've been in {visits_total} times so far — always good to have you back.")
     if offs:
         facts.append(f"{offs[0]} is on right now.")
     cta_en = "Want me to hold a slot for you this week? Reply YES — no commitment."
@@ -692,10 +692,9 @@ CUSTOMER_COMPOSERS = {
 
 def _cf_generic(category, merchant, trigger, payload, customer):
     name = _g(customer, "identity", "name") or "there"
-    state = _g(customer, "state") or ""
-    rel = _g(customer, "relationship", default={}) or {}
-    last_visit = rel.get("last_visit")
-    facts = [f"Checking in from {biz_name(merchant)}" + (f" — it's been a bit since {last_visit}." if last_visit else ".")]
+    days = payload.get("days_since_last_visit") or payload.get("days_since")
+    facts = [f"Checking in from {biz_name(merchant)}"
+             + (f" — it's been {days} days." if days else " — it's been a little while.")]
     offs = active_offers(merchant)
     if offs:
         facts.append(f"{offs[0]} is available right now.")

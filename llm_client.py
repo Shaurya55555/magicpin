@@ -97,7 +97,8 @@ def chat(system: str, user: str, *, temperature: float | None = None, max_tokens
         models.append(FALLBACK_MODEL)
     for mi, model in enumerate(models):
         tries = (retries + 1) if mi == 0 else 1
-        for attempt in range(tries + len(_KEYS)):
+        laps = 0
+        for attempt in range(tries + len(_KEYS) * 2):
             try:
                 out = _one_call(model, system, user, temperature, max_tokens)
                 if out:
@@ -106,11 +107,16 @@ def chat(system: str, user: str, *, temperature: float | None = None, max_tokens
                 code = getattr(e, "code", None)
                 if code == 429:
                     if _rotate_key():
-                        continue  # try the same call with the next key in the pool
+                        if _key_idx == 0:
+                            laps += 1
+                            if laps >= 2:
+                                break       # whole pool minute-limited -> deterministic
+                            time.sleep(2)   # let the per-minute window breathe
+                        continue
                     if mi < len(models) - 1:
-                        break     # single key exhausted -> jump to the fallback model
+                        break
                 if attempt < tries - 1:
                     time.sleep(1.0 * (attempt + 1))
-                if attempt >= tries - 1 and code != 429:
+                elif code != 429:
                     break
     return None
