@@ -83,64 +83,95 @@ _LEVER_BY_KIND = {
     "recall_due": "warmth", "chronic_refill_due": "reciprocity", "appointment_tomorrow": "reciprocity",
     "trial_followup": "reciprocity", "wedding_package_followup": "reciprocity",
 }
-# Per-trigger message strategy — NOT a planner, just a direction for the writer:
-# what this message is FOR (objective) and what its first sentence should hang on (hook).
-_KIND_STRATEGY = {
-    "competitor_opened":     ("help the merchant decide whether to sharpen their own offer in response - "
-                              "if the competitor undercuts on price, the recommendation is to consider a "
-                              "keener offer this week, not to sit on the current one",
-                              "the competitor: who, how close, their price vs the merchant's"),
-    "perf_dip":              ("get the merchant to let Vera diagnose and act on the drop",
-                              "the exact current performance number and that it has fallen"),
-    "perf_spike":            ("help the merchant capitalise on the uptick while it lasts",
-                              "the metric that is up and what likely drove it"),
-    "seasonal_perf_dip":     ("reassure the merchant the dip is normal and steer effort to retention",
-                              "that this dip is the expected seasonal pattern, not a listing problem"),
-    "milestone_reached":     ("turn the milestone into a light social-proof action",
-                              "the milestone itself and how close it is"),
-    "review_theme_emerged":  ("act on the recurring review theme before it spreads",
-                              "what reviewers keep saying and how often"),
-    "renewal_due":           ("get the renewal locked with no visibility gap",
-                              "the plan coming up for renewal"),
-    "winback_eligible":      ("show the merchant what reactivating gets back",
-                              "how long since the plan lapsed and what has slipped since"),
-    "gbp_unverified":        ("get the Google listing verified",
-                              "the listing is unverified and the traffic it already has"),
-    "supply_alert":          ("get an urgent customer notice out about the affected batch",
-                              "the molecule, the affected batch numbers, the manufacturer"),
-    "regulation_change":     ("help the merchant comply before the deadline with the least effort",
-                              "the regulation and its effective date"),
-    "research_digest":       ("surface one useful finding for this merchant's patients/customers",
-                              "the headline finding and its source"),
-    "cde_opportunity":       ("get the merchant to register for the CE/CDE session",
-                              "the session topic and that it is free/low-cost for members"),
-    "ipl_match_today":       ("make a data-informed call on whether tonight's match is worth a push",
-                              "the match, the venue/time, and whether it typically helps this merchant"),
-    "festival_upcoming":     ("get the merchant planning for the festival at the right time (restraint if far off)",
-                              "the festival and how many days out it is"),
-    "category_seasonal":     ("get the merchant to ride one clear seasonal demand shift",
-                              "the single biggest demand movement this season"),
-    "active_planning_intent": ("hand the merchant a usable first draft of what they were planning",
-                               "what they were planning, referenced back to them"),
-    "curious_ask_due":       ("ask the merchant a genuine question and offer to turn the answer into content",
-                              "one specific question about their week"),
-    "dormant_with_vera":     ("re-open the conversation with low friction",
-                              "how long since we last spoke and what it was about"),
-    "recall_due":            ("get the customer to book their due recall/service",
-                              "the service that is due and the slots available"),
-    "chronic_refill_due":    ("get the customer to confirm their refill before stock runs out",
-                              "the medicines and when they run out"),
-    "appointment_tomorrow":  ("get the customer to confirm tomorrow's appointment",
-                              "the appointment is tomorrow"),
-    "trial_followup":        ("convert the trial into a booked next session",
-                              "the trial they just did and the next slot"),
-    "wedding_package_followup": ("keep the wedding package moving to the next step",
-                                 "days to the wedding and the next step window"),
-    "customer_lapsed_soft":  ("warmly invite a lightly-lapsed customer back",
-                              "it's been a while, framed gently, plus their history with the business"),
-    "customer_lapsed_hard":  ("re-engage a long-lapsed customer without any shame framing",
-                              "it's been a while, no judgement, plus what they came for last time"),
+# Per-trigger COPY CONTRACT — not a planner, a direction for the writer. Each entry:
+#   purpose      one job the message must do (nothing else)
+#   hook         what sentence 1 hangs on
+#   consequence  the "so what" - what's at stake / what's on offer (sentence 2)
+#   cta          the shape of the ask
+#   avoid        the failure mode for this kind
+_KS = {
+    "competitor_opened": dict(
+        purpose="decide", hook="the competitor - who, how close, their price vs yours",
+        consequence="comparison shoppers can now pick the cheaper option",
+        cta="a choice: keep the current offer, or sharpen it this week", avoid="a metrics dump"),
+    "perf_dip": dict(
+        purpose="diagnose", hook="the exact current number and that it has fallen",
+        consequence="left alone it keeps costing bookings", cta="a yes to a quick diagnosis", avoid="vague concern"),
+    "perf_spike": dict(
+        purpose="activate", hook="the metric that's up and the likely driver",
+        consequence="the window to compound it is short", cta="a yes to repeat what worked", avoid="just congratulating"),
+    "seasonal_perf_dip": dict(
+        purpose="prepare", hook="this dip is the normal seasonal pattern, not a listing problem",
+        consequence="ad spend now is wasted; retention effort isn't", cta="none - just the reassurance + one retention idea", avoid="alarm"),
+    "milestone_reached": dict(
+        purpose="activate", hook="the milestone and how close it is",
+        consequence="a public moment worth capturing while it's fresh", cta="a yes to a ready-to-post note", avoid="inflating a number into a 'milestone'"),
+    "review_theme_emerged": dict(
+        purpose="decide", hook="what reviewers keep saying and how often",
+        consequence="it shapes what new customers expect before they walk in", cta="a yes to a reply template + one fix", avoid="ignoring the sentiment"),
+    "renewal_due": dict(
+        purpose="confirm", hook="the plan is up for renewal",
+        consequence="a lapse means a visibility gap", cta="a yes to lock it now, or flag a change first", avoid="sounding like a billing bot"),
+    "winback_eligible": dict(
+        purpose="recover", hook="how long since the plan lapsed",
+        consequence="what has slipped since (leads, visibility)", cta="a yes to see exactly what reactivating gets back", avoid="pressure"),
+    "gbp_unverified": dict(
+        purpose="decide", hook="the listing is unverified and the views it already pulls",
+        consequence="those visitors reach a profile with no trust signal", cta="start verification now, or leave it", avoid="padding with unrelated metrics"),
+    "supply_alert": dict(
+        purpose="activate", hook="the molecule, the affected batch numbers, the manufacturer",
+        consequence="customers on those batches need a replacement", cta="a yes to a drafted customer notice + pickup flow", avoid="burying the batch numbers"),
+    "regulation_change": dict(
+        purpose="comply", hook="the regulation and its effective date",
+        consequence="non-compliance risk after that date", cta="a yes to a 1-page audit checklist", avoid="reading like a memo - one implication, one action"),
+    "research_digest": dict(
+        purpose="learn", hook="the headline finding and its source",
+        consequence="what it means for this merchant's patients/customers", cta="an open question: want the abstract / a patient-ready note?", avoid="citing an unverifiable number without the source"),
+    "cde_opportunity": dict(
+        purpose="book", hook="the session topic and that it's free/low-cost for members",
+        consequence="a fit for where this practice is heading", cta="a yes to reserve a spot", avoid="leading with the merchant's view count"),
+    "ipl_match_today": dict(
+        purpose="decide", hook="the match, venue and start time tonight",
+        consequence="whether tonight's crowd actually helps this merchant (weeknight vs weekend)", cta="a yes to the right promo for tonight", avoid="assuming every match night is good"),
+    "festival_upcoming": dict(
+        purpose="prepare", hook="the festival and how many days out",
+        consequence="the planning window is open now (or: too early, just a heads-up)", cta="a yes to a promo plan, or a reminder closer to the date", avoid="manufacturing urgency when it's months away"),
+    "category_seasonal": dict(
+        purpose="activate", hook="the single biggest demand movement this season",
+        consequence="stock and shelf can catch it or miss it", cta="a yes to a shelf/offer reshuffle", avoid="listing every trend line"),
+    "active_planning_intent": dict(
+        purpose="decide", hook="what they were planning, quoted back",
+        consequence="here's a usable first draft", cta="an open question: does this draft fit, or tweak it?", avoid="promising to send a draft instead of showing it"),
+    "curious_ask_due": dict(
+        purpose="ask", hook="one specific question about their week",
+        consequence="the answer becomes a ready post + WhatsApp reply", cta="the question itself - low effort to answer", avoid="answering your own question"),
+    "dormant_with_vera": dict(
+        purpose="recover", hook="how long since you last spoke and what about",
+        consequence="the thread is still worth picking up", cta="an open, no-pressure question to re-enter", avoid="a hard ask on a cold thread"),
+    "recall_due": dict(
+        purpose="book", hook="the service that's due (and when)",
+        consequence="an easy slot is open this week", cta="a numbered slot choice", avoid="a bare 'reply YES'"),
+    "chronic_refill_due": dict(
+        purpose="confirm", hook="the medicines and when the stock runs out",
+        consequence="same dose, same pack, ready", cta="a CONFIRM to dispatch", avoid="clinical jargon a patient wouldn't use"),
+    "appointment_tomorrow": dict(
+        purpose="confirm", hook="the appointment is tomorrow at <business>",
+        consequence="", cta="a numbered choice: confirm, or reschedule", avoid="filler warmth sentences"),
+    "trial_followup": dict(
+        purpose="book", hook="the trial they just did",
+        consequence="the next session keeps the momentum", cta="a yes to lock the next slot", avoid="over-selling"),
+    "wedding_package_followup": dict(
+        purpose="book", hook="days to the wedding and the next-step window",
+        consequence="starting now keeps the timeline comfortable", cta="a yes to block the first slot", avoid="pressure"),
+    "customer_lapsed_soft": dict(
+        purpose="recover", hook="it's been a while (framed gently)",
+        consequence="a slot is easy to hold this week", cta="a yes to hold one", avoid="stating a specific past-visit date or count"),
+    "customer_lapsed_hard": dict(
+        purpose="recover", hook="it's been a while, no judgement, and what they last came for",
+        consequence="a low-commitment way back in", cta="a yes to hold a slot", avoid="any shame framing or a stated visit count"),
 }
+# back-compat shim: (objective, hook) tuples derived from the contract
+_KIND_STRATEGY = {k: (f"{v['purpose']}: {v.get('avoid','')}".rstrip(": "), v["hook"]) for k, v in _KS.items()}
 
 _ARTIFACT_KINDS = {"active_planning_intent", "curious_ask_due", "category_seasonal",
                    "research_digest", "ipl_match_today", "festival_upcoming", "review_theme_emerged",
@@ -220,10 +251,13 @@ def _humanize_value(v) -> str:
     if isinstance(v, list):
         parts = []
         for it in v:
+            if isinstance(it, dict):                       # slot objects -> their label / time
+                parts.append(str(it.get("label") or it.get("iso") or it.get("time") or "").strip())
+                continue
             m = _TREND_RE.match(str(it))
             parts.append(f"{m.group(1).replace('_', ' ').strip()} {m.group(2)}%" if m
                          else str(it).replace("_", " "))
-        return ", ".join(parts)
+        return ", ".join(p for p in parts if p)
     if isinstance(v, dict):
         out = []
         for kk, vv in v.items():
@@ -386,6 +420,25 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
         if di2 and di2.get("title"):
             why = f"{kind.replace('_',' ')} - {fix_text(di2['title'])}"
 
+    # deterministic numbered CTA where the situation offers a clean binary choice
+    slot_cta = ""
+    _slots = payload.get("available_slots") or payload.get("slots") or []
+    _labels = [s.get("label") for s in _slots if isinstance(s, dict) and s.get("label")]
+    if len(_labels) >= 2:
+        slot_cta = f"reply 1 for {_labels[0]}, 2 for {_labels[1]} (or say another time)"
+    elif len(_labels) == 1:
+        slot_cta = f"reply YES to take {_labels[0]}, or say another time"
+    else:
+        slot_cta = {
+            "competitor_opened": "reply 1 to sharpen the offer this week, 2 to keep it as is",
+            "gbp_unverified": "reply 1 to start verification now, 2 to leave it for now",
+            "appointment_tomorrow": "reply 1 to confirm, 2 to reschedule",
+            "renewal_due": "reply 1 to renew now, 2 to change something first",
+            "chronic_refill_due": "reply CONFIRM to dispatch, or call if the dose changed",
+            "winback_eligible": "reply 1 to see what reactivating gets back, 2 not now",
+            "perf_dip": "reply 1 to run a quick diagnostic, 2 not now",
+        }.get(kind, "")
+
     return {
         "kind": kind,
         "scope": "customer" if scope_customer else "merchant",
@@ -402,9 +455,13 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
         "code_switch": bool(code_switch),
         "customer": cust,
         "why_now": why,
-        "objective": _KIND_STRATEGY.get(kind, ("give the merchant one useful, specific next step", ""))[0],
-        "hook": _KIND_STRATEGY.get(kind, ("", "the single most relevant fact in the list"))[1]
-                or "the single most relevant fact in the list",
+        "purpose": _KS.get(kind, {}).get("purpose", "help them take one clear next step"),
+        "hook": _KS.get(kind, {}).get("hook") or "the single most relevant fact in the list",
+        "consequence": _KS.get(kind, {}).get("consequence", ""),
+        "cta_hint": _KS.get(kind, {}).get("cta", "one easy, decisive step"),
+        "slot_cta": slot_cta,
+        "avoid": _KS.get(kind, {}).get("avoid", "a metrics dump"),
+        "objective": _KIND_STRATEGY.get(kind, ("one useful next step", ""))[0],
         "lever": _LEVER_BY_KIND.get(kind, "reciprocity"),
         "cta_type": ("none" if kind in _NONE_CTA_KINDS
                      else "open_ended" if (kind in _OPEN_ENDED_KINDS and not scope_customer)
@@ -538,6 +595,9 @@ def validate_output(body: str, fs: dict) -> tuple[bool, str]:
         return False, "empty/too short"
     # LLMs love the unicode hyphen/dash — normalise so date & number checks can't be bypassed
     body = body.translate({0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2013: "-", 0x2014: "-", 0x2212: "-"})
+    # bloat guard — a non-artifact nudge over ~52 words is a memo; force a rewrite
+    if not fs.get("artifact_expected") and len(body.split()) > 52:
+        return False, f"too long ({len(body.split())} words) - tighten to under 45"
     low = body.lower()
     for j in _JARGON:
         if j in low:
