@@ -931,10 +931,11 @@ _LLM_SYSTEM = (
     "point (a figure, its peer benchmark, a price); a good message can carry three grounded "
     "numbers, a bad one reads like a dashboard.\n\n"
     "ABSOLUTE RULES:\n"
-    "1. VERIFIED FACTS may be stated plainly. ATTRIBUTED FACTS are also real, but you must "
-    "introduce each one with its given attribution phrase (e.g. 'your dashboard shows', "
-    "'from your customer records', 'last time we spoke') so the source is always visible. "
-    "Never state an attributed fact as a bare claim.\n"
+    "1. Most FACTS may be stated plainly. A fact tagged '[phrase with provenance: ...]' (and "
+    "every ATTRIBUTED FACT) is real but the reader can't see the source for themselves, so "
+    "introduce it the way the tag says (e.g. 'your dashboard shows', 'your customer records "
+    "show', 'about X% for similar businesses', 'it's been about N months since your last "
+    "visit') - the number stays, the source is always visible. Never state one as a bare claim.\n"
     "2. Use ONLY numbers, prices, dates, counts and percentages that appear in the FACTS "
     "block, copied verbatim. Never invent, estimate, round, or compute a new one. If a number "
     "isn't in the block, do not state it - write the sentence without a number instead. "
@@ -1073,8 +1074,10 @@ def _fs_user_prompt(fs: dict) -> str:
     # Every hard fact traces to a field in the four pushed contexts. But handing the writer
     # all ~20 invites a metrics dump - curate to what THIS trigger actually needs, keep the
     # payload/offer/identity facts always, cap the rest.
-    hard = "\n".join(f"- {f['label']}: {f['value']}" for f in _curate_hard_facts(fs, kind)) \
-        or "- (no hard metrics available - write a specific but number-free message)"
+    hard = "\n".join(
+        f"- {f['label']}: {f['value']}" + (f"  [phrase with provenance: {f['attrib']}]" if f.get("attrib") else "")
+        for f in _curate_hard_facts(fs, kind)
+    ) or "- (no hard metrics available - write a specific but number-free message)"
     soft_facts = list(fs.get("soft_facts", []))[:3]
     soft = "\n".join(f"- {f['label']}: {f['value']}  [introduce with: {f['attribute_as']}]"
                      for f in soft_facts)
