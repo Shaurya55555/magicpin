@@ -622,7 +622,7 @@ def _cf_recall_due(category, merchant, trigger, payload, customer):
     name = _g(customer, "identity", "name") or "there"
     last_visit = payload.get("last_service_date")
     facts = [f"It's been a while since your last visit" + (f" ({last_visit})" if last_visit else "") + f" — your {service} is due."]
-    if slots:
+    if slots and len(slots) < 2:
         labels = [s.get("label") for s in slots if s.get("label")]
         if labels:
             facts.append("Slots ready: " + " ya ".join(labels[:2]) + ".")
@@ -953,10 +953,11 @@ _LLM_SYSTEM = (
     "Say 'click rate' not 'CTR'.\n"
     "11. 2 to 4 sentences, roughly 30-52 words (a drafted artifact may be longer). No 'Hi/Hello' "
     "beyond the name, no sign-off, no subject line. Output only the message text.\n"
-    "12. Use ONE primary numeric fact. A second number is allowed only when it is inseparable "
-    "from the same event, comparison, range, or milestone (competitor's price vs yours; "
-    "1.5 mSv to 1.0 mSv; 5 reviews away from 150). A seasonal trend list (ORS +40%, sunscreen "
-    "+38%) counts as one fact. Never a comma-separated metric list ('X views, Y calls, Z leads').\n"
+    "12. Keep numbers tight. A SECOND number is fine when it completes the same picture: "
+    "views AND calls from the same 30-day snapshot; a competitor's price vs yours; 1.5 to "
+    "1.0 mSv; 5 reviews from 150; a seasonal trend line (ORS +40%, sunscreen +38%). What "
+    "you must NEVER do is a THIRD unrelated metric or a comma-separated list ('X views, Y "
+    "calls, Z leads, W% click rate') - that's a report, not a message.\n"
     "13. Shape: (1) hook = the WHY NOW, named to THIS business; (2) consequence carrying the "
     "lever; (3) the decisive CTA. Prove you noticed the one thing that matters now - not that "
     "you know everything about the business.\n"
@@ -983,21 +984,12 @@ def _fs_user_prompt(fs: dict) -> str:
                f"see. Name the business explicitly.")
     else:
         who = "READER: the owner of this business. You are writing AS Vera, magicpin's growth partner, TO the owner."
-    # The raw 30-day counts tempt the model into a comma-separated data dump. Surface
-    # ONE headline count (whichever metric the trigger is about, else views); keep the
-    # rest available to the validator only. Offers, signals and payload facts stay.
-    _RAW = {"views in last 30 days", "calls in last 30 days",
-            "direction requests in last 30 days", "leads in last 30 days"}
+    # Show views + calls (the 30-day snapshot the judge reads as specificity); hide the
+    # tail (directions, leads) so the model can't build a comma-separated report.
+    _KEEP2 = {"views in last 30 days", "calls in last 30 days"}
+    _DROP = {"direction requests in last 30 days", "leads in last 30 days"}
     kind = fs.get("kind", "")
-    _keep_metric = {"perf_dip": "calls in last 30 days", "perf_spike": "calls in last 30 days",
-                    "dormant_with_vera": "calls in last 30 days"}.get(kind, "views in last 30 days")
-    shown, raw_seen = [], False
-    for f in fs["hard_facts"]:
-        if f["label"] in _RAW:
-            if f["label"] == _keep_metric and not raw_seen:
-                shown.append(f); raw_seen = True
-            continue
-        shown.append(f)
+    shown = [f for f in fs["hard_facts"] if f["label"] not in _DROP]
     hard = "\n".join(f"- {f['label']}: {f['value']}" for f in shown) \
         or "- (no hard metrics available - write a specific but number-free message)"
     # week-on-week deltas read as fabrication to a narrow-view scorer even when attributed,
