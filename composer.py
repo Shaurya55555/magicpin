@@ -1004,35 +1004,46 @@ _LLM_SYSTEM = (
 
 # Which metric families each trigger kind actually needs. Payload-derived facts, active
 # offers and the "business you're writing from / where" identity facts are ALWAYS kept.
-_ALWAYS_KEEP = ("active offer running", "the business you're writing from", "where the business is",
-                "their last visit was in", "times they have visited before",
-                "what they came in for last time", "their most frequent service")
+_ALWAYS_KEEP = ("active offer running", "the business you're writing from", "where the business is")
 _KIND_FACTS = {
     "perf_dip":            ("vs the previous week", "in last 30 days", "similar businesses nearby"),
     "perf_spike":          ("vs the previous week", "in last 30 days", "similar businesses nearby", "likely driver"),
-    "seasonal_perf_dip":   ("vs the previous week", "in last 30 days", "retention"),
+    "seasonal_perf_dip":   ("vs the previous week", "in last 30 days", "retention rate"),
     "gbp_unverified":      ("views in last 30 days", "listing click rate", "similar businesses nearby", "something true"),
     "competitor_opened":   ("competitor", "distance", "their offer", "opened", "views in last 30 days"),
-    "renewal_due":         ("days left on the magicpin plan", "magicpin plan name", "in last 30 days", "not seen in 6"),
-    "winback_eligible":    ("days left on the magicpin plan", "not seen in 6", "in last 30 days", "leads"),
+    "renewal_due":         ("days left on the magicpin plan", "magicpin plan name", "views in last 30 days", "leads in last 30 days", "not seen in 6"),
+    "winback_eligible":    ("days left on the magicpin plan", "not seen in 6", "views in last 30 days", "leads in last 30 days"),
     "milestone_reached":   ("milestone", "reviews", "review", "count", "rating"),
     "review_theme_emerged":("theme", "occurrences", "review", "what recent reviews"),
     "curious_ask_due":     ("vs the previous week", "views in last 30 days"),
-    "dormant_with_vera":   ("days since", "last discussed", "in last 30 days"),
-    "active_planning_intent": ("intent", "topic", "merchant last message", "something true", "in last 30 days"),
+    "dormant_with_vera":   ("days since last merchant message", "last discussed", "last topic", "views in last 30 days"),
+    "active_planning_intent": ("intent", "topic", "merchant last message", "something true", "views in last 30 days"),
     "category_seasonal":   ("trend", "demand", "season"),
-    "festival_upcoming":   ("festival", "days"),
+    "festival_upcoming":   ("festival", "days until", "days out", "days away", "date"),
     "ipl_match_today":     ("match", "venue", "time", "start"),
-    "research_digest":     ("higher-risk adult patients", "unique customers", "retention"),
+    "research_digest":     ("higher-risk adult patients", "unique customers", "retention rate"),
     "cde_opportunity":     ("higher-risk adult patients", "credits", "fee"),
     "regulation_change":   ("deadline", "effective"),
+}
+# customer-scoped kinds curate too - a chronic refill isn't about "visits", a recall is
+_CUST_KIND_FACTS = {
+    "recall_due":            ("business", "where the business", "service", "due", "slot", "offer", "last time", "how long"),
+    "chronic_refill_due":    ("business", "where the business", "medicine", "molecule", "run out", "dose", "refill", "delivery", "offer"),
+    "appointment_tomorrow":  ("business", "where the business", "appointment", "tomorrow", "slot", "time"),
+    "trial_followup":        ("business", "where the business", "trial", "class", "session", "slot", "offer"),
+    "wedding_package_followup": ("business", "where the business", "wedding", "days", "package", "session", "slot", "offer"),
+    "customer_lapsed_soft":  ("business", "where the business", "last visit", "how long", "came in for", "frequent service", "slot", "offer"),
+    "customer_lapsed_hard":  ("business", "where the business", "last visit", "how long", "came in for", "days since", "previous focus", "slot", "offer"),
 }
 
 
 def _curate_hard_facts(fs: dict, kind: str) -> list:
     facts = fs.get("hard_facts", [])
     if fs.get("scope") == "customer" or fs.get("customer"):
-        return facts  # customer sheets are already tight
+        want = _CUST_KIND_FACTS.get(kind)
+        if not want:
+            return facts
+        return [f for f in facts if any(w in f["label"].lower() for w in want)] or facts
     wanted = _KIND_FACTS.get(kind)
     if not wanted:
         return facts[:8]
@@ -1088,10 +1099,13 @@ def _fs_user_prompt(fs: dict) -> str:
     voice = "; ".join(x for x in [fs.get("voice_rules"), fs.get("voice_tone")] if x)
     thin_note = ""
     if "no extra detail" in fs.get("why_now", ""):
-        thin_note = ("\nNOTE: this alert carries NO specifics about what happened. Do NOT invent any "
-                     "- no competitor name/price/distance, no milestone number, no review/customer "
-                     "count, no percentage, no 'X% cheaper than you', no dates, no day of the week, "
-                     "no invented appointment time. You CAN'T win on specificity here, so win on the "
+        thin_note = ("\nNOTE: this alert carries NO specifics about what happened. Do NOT invent ANY "
+                     "detail about it - no competitor name, no competitor type/cuisine ('a new South "
+                     "Indian cafe'), no 'right next door' / 'a stone's throw', no price, no distance, "
+                     "no milestone number, no review/customer count, no percentage, no 'X% cheaper', "
+                     "no dates, no day of the week, no invented appointment time. Say ONLY 'a new "
+                     "competitor has opened nearby' / 'it's been a while' and nothing more about the "
+                     "event itself. You CAN'T win on specificity here, so win on the "
                      "other three: (a) MERCHANT FIT - name the business, its locality and its owner, "
                      "and reference its real listed 30-day numbers or active offer so the message "
                      "could only have been written for THIS shop; (b) CATEGORY FIT - use the "

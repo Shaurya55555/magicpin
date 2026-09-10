@@ -374,7 +374,10 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
         # reads oddly in a WhatsApp line and no example ever uses.
         rel = customer.get("relationship", {}) or {}
         lv = rel.get("last_visit")
-        if _present(lv):
+        # if the trigger payload already gives a days-since figure, use only that - a second
+        # month-based estimate from relationship.last_visit would contradict it.
+        _has_days_since = any(k in payload for k in ("days_since_last_visit", "days_since", "last_seen_days"))
+        if _present(lv) and not _has_days_since:
             m = re.match(r"(\d{4})-(\d{2})-(\d{2})", str(lv))
             if m:
                 _mons = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
