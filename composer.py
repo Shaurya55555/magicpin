@@ -553,34 +553,50 @@ def _mf_generic(category, merchant, trigger, payload):
         "milestone": "the growth you've built so far",
     }.get(kind, "your listing")
 
+    owner = owner_name(merchant)
+    loc = locality(merchant)
     perf = _g(merchant, "performance", default={}) or {}
     biz = biz_name(merchant)
-    ks = getattr(factsheet, "_KS", {}).get(kind, {})
+    where = f"{biz}{', ' + loc if loc else ''}"
+    vn = perf.get("views")
 
-    # HOOK: the topic, anchored on one real number if we have one
-    if concrete_bits:
-        hook = f"On {topic} for {biz} — {', '.join(concrete_bits)}."
-    elif perf.get("views") is not None:
-        hook = f"On {topic} for {biz}: you had {perf.get('views')} views in the last 30 days."
-    else:
-        hook = f"Quick one on {topic} for {biz}."
-
-    # CONSEQUENCE: a grounded, non-fabricated 'so what' per kind
-    cons = {
-        "dormant_with_vera": "the thread's still worth picking up.",
-        "winback_eligible": "worth a look at what reactivating brings back.",
-        "milestone_reached": "a good moment to turn that into a review push.",
-        "milestone": "a good moment to turn that into a review push.",
-        "perf_spike": "a short window to build on it.",
-        "perf_dip": "worth a quick check before it costs more bookings.",
-        "competitor_opened": "worth deciding whether to sharpen your offer this week.",
-        "category_seasonal": "worth catching the shift on your shelf and offers.",
-        "festival_upcoming": "early enough to plan without rushing.",
-        "gbp_unverified": "verifying it adds the trust signal customers look for.",
-        "research_digest": "one finding may be worth acting on.",
-        "review_theme_emerged": "shaping what new customers expect.",
-    }.get(kind, "worth a quick look at the next step.")
-    facts = [hook, cons]
+    # HOOK + CONSEQUENCE per kind — a clean, natural line, never a fabricated specific.
+    _H = {
+        "dormant_with_vera":  (f"it's been a while since we talked strategy for {where}",
+                               "the thread's still worth picking up"),
+        "winback_eligible":   (f"your magicpin plan has been lapsed a while now for {where}",
+                               "reactivating brings back visibility you're missing"),
+        "milestone_reached":  (f"{where} has been building real momentum",
+                               "a good moment to turn that into a review push"),
+        "milestone":          (f"{where} has been building real momentum",
+                               "a good moment to turn that into a review push"),
+        "perf_spike":         (f"{where}'s recent numbers have been moving the right way",
+                               "there's a short window to build on it"),
+        "perf_dip":           (f"{where}'s recent numbers have softened a little",
+                               "worth a quick check before it costs more bookings"),
+        "competitor_opened":  (f"there's new competition near {where}",
+                               "worth deciding whether to sharpen your offer this week"),
+        "category_seasonal":  (f"demand is shifting in your category around {where}",
+                               "worth catching it on your shelf and offers"),
+        "festival_upcoming":  (f"the festive season is coming up for {where}",
+                               "early enough to plan without rushing"),
+        "gbp_unverified":     (f"{where}'s Google listing still isn't verified",
+                               "verifying it adds the trust signal customers look for"),
+        "research_digest":    (f"there's fresh {category.get('slug', 'category')} research this week",
+                               "one finding may be worth acting on for {where}".replace("{where}", where)),
+        "review_theme_emerged": (f"a pattern is showing up in {where}'s recent reviews",
+                                 "it shapes what new customers expect"),
+        "renewal_due":        (f"{where}'s plan is coming up for renewal",
+                               "renewing keeps your visibility unbroken"),
+        "gbp_unverified ":    ("", ""),
+    }
+    hook, cons = _H.get(kind, (f"quick one for {where}", "worth a look at the next step"))
+    if concrete_bits and kind not in ("customer_lapsed_soft", "customer_lapsed_hard"):
+        cons = cons + f" ({', '.join(concrete_bits[:1])})"
+    elif vn is not None and kind in ("perf_dip", "perf_spike", "dormant_with_vera", "gbp_unverified"):
+        cons = f"you're at {vn} views over 30 days, and {cons}"
+    cons = cons[:1].upper() + cons[1:] if cons else cons
+    facts = [hook.rstrip(".") + ".", cons.rstrip(".") + "."]
 
     cta_line = ks.get("slot_cta") if False else None  # slot_cta is on the factsheet, not here
     cta_en = {
@@ -886,42 +902,67 @@ def _deterministic_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer:
 
 _LLM_SYSTEM = (
     "You are Vera, magicpin's AI growth partner for small local businesses in India "
-    "(dentists, salons, restaurants, gyms, pharmacies). Write ONE short WhatsApp message that "
-    "moves the owner ONE step - it does exactly the PURPOSE given, nothing more. It is not a "
-    "status report; it is a nudge.\n\n"
-    "SHAPE (this is the whole message):\n"
-    "  1. HOOK - open with the person's name, then the OPEN-ON fact: the reason you're writing "
-    "now. Not a raw statistic dump - the specific thing that changed or is due.\n"
-    "  2. CONSEQUENCE - the 'so what': what's at stake, at risk, or on offer for THIS business. "
-    "This is where the LEVER lives - make the reader feel it (loss_aversion: what slips away; "
-    "social_proof: 'other salons nearby are already doing this' - pattern only, never an "
-    "invented peer number; curiosity: the gap they'll want closed; urgency: the clock, "
-    "concretely; warmth: personal, no guilt).\n"
-    "  3. EASY RESPONSE - one CTA of the given type, phrased as a DECISION, not permission. "
-    "Never a bare 'reply Yes' and never 'would you like me to help?'. If the facts give options "
-    "or slots, offer them as a numbered choice ('reply 1 for Wed 6pm, 2 for Thu 5pm'; 'reply 1 "
-    "to sharpen the offer, 2 to keep it'). If there's a real deadline in the facts, name it here.\n\n"
-    "HARD LIMITS:\n"
-    "- 2 to 3 sentences, UNDER 45 words (a drafted artifact may run longer). No greeting beyond "
-    "the name, no sign-off, no subject line. Output only the message text.\n"
-    "- ONE numeric fact. A second number only if it's inseparable from the same "
-    "event/comparison/range/milestone (their price vs a competitor's; 1.5 to 1.0 mSv; 5 reviews "
-    "from 150). Never a comma-separated metric list.\n"
-    "- Match the VOICE. Avoid every TABOO word. If CODE-SWITCH is yes, mix natural Hindi-English.\n"
-    "- No internal jargon ('trigger', 'signal', 'CTR', 'the system'). Say 'click rate'.\n\n"
-    "GROUNDING (non-negotiable):\n"
-    "- Use ONLY numbers/prices/dates/percentages that appear verbatim in the FACTS. Never "
-    "invent, round, estimate or compute one. If you have none, write a specific-but-number-free "
-    "line. Never relabel a fact (a 'leads' count is leads, not 'reviews' or 'customers').\n"
-    "- ATTRIBUTED FACTS must carry their given source phrase ('your dashboard shows...'). Never "
-    "state one as a bare claim.\n"
-    "- Never promise a discount, freebie, gift, saved spot or perk that isn't verbatim in the "
-    "ACTIVE OFFER facts. A reminder just confirms the appointment/refill. No invented expiry dates.\n"
-    "- If ARTIFACT is yes, put the actual drafted thing in the message (tier labels, the post "
-    "text) - a draft may invent STRUCTURE but not a rupee price, % discount or minimum-order "
-    "value that isn't a real listed figure. State each number once.\n"
-    "- For a CUSTOMER message: never state a specific past-visit calendar date or a total visit "
-    "count (the customer's record isn't visible to you as a figure). 'It's been a while' is fine.\n"
+    "(dentists, salons, restaurants, gyms, pharmacies). You write ONE short outbound "
+    "WhatsApp-style message.\n\n"
+    "THREE THINGS PEOPLE GET WRONG - do not:\n"
+    "  a) invent a freebie, gift, discount, or 'saved spot' that isn't in the ACTIVE OFFER "
+    "facts. An appointment or refill reminder just confirms the appointment or refill.\n"
+    "  b) open with a raw statistic. The first sentence is the REASON you're writing now "
+    "(the WHY NOW), addressed to the person by name.\n"
+    "  c) stack numbers. Two at most in the whole message.\n\n"
+    "ABSOLUTE RULES:\n"
+    "1. VERIFIED FACTS may be stated plainly. ATTRIBUTED FACTS are also real, but you must "
+    "introduce each one with its given attribution phrase (e.g. 'your dashboard shows', "
+    "'from your customer records', 'last time we spoke') so the source is always visible. "
+    "Never state an attributed fact as a bare claim.\n"
+    "2. Use ONLY numbers, prices, dates, counts and percentages that appear in the FACTS "
+    "block, copied verbatim. Never invent, estimate, round, or compute a new one. If a number "
+    "isn't in the block, do not state it - write the sentence without a number instead. "
+    "Never relabel a fact: a 'leads' number is leads, a 'views' number is views - do not call "
+    "either one 'reviews', 'customers', or a 'milestone'.\n"
+    "3. Do NOT promise any discount, freebie, gift, complimentary item, priority slot, saved "
+    "spot, or perk unless it appears verbatim in the ACTIVE OFFER facts. No 'as a thank-you "
+    "we'll add...', no 'we've saved a special spot', no invented loyalty gestures. An "
+    "appointment reminder just confirms the appointment. Only real, listed offers - and never "
+    "attach an expiry date to an offer unless that date is given as a fact.\n"
+    "4. START with the person's given name. Then name the BUSINESS and its LOCALITY, and for a "
+    "merchant message the owner where given - a message that could belong to any business loses "
+    "points. (Business name once is enough; don't repeat it.)\n"
+    "5. First sentence = OPEN ON (the hook): the reason you're messaging now. Serve the PURPOSE - "
+    "that is the one job of the whole message.\n"
+    "6. Exactly ONE call to action of the given type, phrased as a DECISION not a request for "
+    "permission (never 'would you like me to help?'). If CTA TYPE names an exact numbered choice, "
+    "use it verbatim. Otherwise: if the facts give slots/options put them in the CTA ('reply 1 "
+    "for Wed 6pm, 2 for Thu 5pm'); if there's a real deadline name it. Never invent scarcity "
+    "('limited seats', 'only today') - use the genuine stakes in the facts: a deadline, a "
+    "competitor taking traffic now, a milestone within reach, stock about to run out, a match tonight.\n"
+    "6b. DEPLOY THE LEVER in sentence 2 (the CONSEQUENCE / 'so what'). loss_aversion => name what "
+    "slips away. social_proof => 'businesses like yours' / 'other salons nearby' are already doing "
+    "this - pattern only, NEVER an invented peer number. curiosity => the specific gap. urgency "
+    "=> the clock, concretely. warmth => personal, no guilt. reciprocity => you've done the work, "
+    "they just say go. Make it sting or pull.\n"
+    "7. If ARTIFACT is yes, include the actual drafted thing (the pricing tiers / the post text / "
+    "the message copy) inside the message, not a promise to send it later. A draft may lay out "
+    "STRUCTURE (tier labels, session counts, a schedule) but must NOT invent a rupee price, a "
+    "percentage discount, or a minimum-order value that isn't in the facts - reuse a real "
+    "listed price or leave it as 'price to confirm'. Do not restate the same figures in both "
+    "the lead-in sentence and the draft - state each number once.\n"
+    "8. Match the VOICE. Avoid the TABOO words entirely.\n"
+    "9. If CODE-SWITCH is yes, mix natural Hindi-English the way an Indian shop owner texts.\n"
+    "10. No internal jargon (never write 'trigger', 'payload', 'signal', 'CTR', 'the system'). "
+    "Say 'click rate' not 'CTR'.\n"
+    "11. 2 to 4 sentences, roughly 30-52 words (a drafted artifact may be longer). No 'Hi/Hello' "
+    "beyond the name, no sign-off, no subject line. Output only the message text.\n"
+    "12. Use ONE primary numeric fact. A second number is allowed only when it is inseparable "
+    "from the same event, comparison, range, or milestone (competitor's price vs yours; "
+    "1.5 mSv to 1.0 mSv; 5 reviews away from 150). A seasonal trend list (ORS +40%, sunscreen "
+    "+38%) counts as one fact. Never a comma-separated metric list ('X views, Y calls, Z leads').\n"
+    "13. Shape: (1) hook = the WHY NOW, named to THIS business; (2) consequence carrying the "
+    "lever; (3) the decisive CTA. Prove you noticed the one thing that matters now - not that "
+    "you know everything about the business.\n"
+    "14. For a CUSTOMER message: you MAY use the DAYS-SINCE number, what they came in for, the "
+    "service due, the due date, the slot times and the medicines - state them plainly. You may "
+    "NOT state a specific past-visit calendar date (like '2026-04-01') or a lifetime visit total.\n"
 )
 
 
@@ -933,10 +974,13 @@ def _fs_user_prompt(fs: dict) -> str:
                f"never with a 'Dr.' prefix. Their language preference is "
                f"{cust.get('language_pref') or 'en'}; age band {cust.get('age_band') or 'n/a'} "
                f"(for tone only — do not state their age).\n"
-               f"ANCHOR on a concrete detail FROM THE FACTS: the days since their last visit, "
-               f"the service due, the due date, the slot times, the medicines. Do NOT state a "
-               f"specific past-visit calendar date or a total visit count - those are not in "
-               f"the reader-visible record and read as invented. Name the business explicitly.")
+               f"USE the concrete facts in the block. If a DAYS-SINCE number is listed you MUST "
+               f"state it ('it's been 57 days'). Also use what they were working on / came in "
+               f"for, the service due, the due date, the slot times, the medicines, the run-out "
+               f"date. These are all fair game and make the message land. "
+               f"The ONLY things off-limits are a specific past-visit CALENDAR DATE (like "
+               f"'2026-04-01') and a lifetime visit TOTAL - those aren't in the record you can "
+               f"see. Name the business explicitly.")
     else:
         who = "READER: the owner of this business. You are writing AS Vera, magicpin's growth partner, TO the owner."
     # The raw 30-day counts tempt the model into a comma-separated data dump. Surface
@@ -969,9 +1013,14 @@ def _fs_user_prompt(fs: dict) -> str:
     voice = "; ".join(x for x in [fs.get("voice_rules"), fs.get("voice_tone")] if x)
     thin_note = ""
     if "no extra detail" in fs.get("why_now", ""):
-        thin_note = ("\nNOTE: there is no specific figure behind this alert. Do NOT invent a "
-                     "milestone, review count, customer count, or percentage. Anchor only on the "
-                     "listed 30-day numbers and the active offer.")
+        thin_note = ("\nNOTE: this alert carries NO specifics. Do NOT invent any detail about "
+                     "what happened - no competitor name/price/distance, no milestone number, no "
+                     "review/customer count, no percentage, no 'X% cheaper than you', no dates, "
+                     "no specific day of the week, no invented appointment time. "
+                     "State the situation in general terms ('a new competitor nearby', 'it's been "
+                     "a while'), lean on the merchant's own listed 30-day numbers / active offer "
+                     "if any, and put the weight on a clean, useful CTA. A short honest message "
+                     "beats a specific invented one.")
         soft_block = ""  # no verified hook here -> don't dangle aggregate/dashboard numbers
     cta_line = fs["cta_type"]
     if fs.get("slot_cta"):

@@ -595,9 +595,9 @@ def validate_output(body: str, fs: dict) -> tuple[bool, str]:
         return False, "empty/too short"
     # LLMs love the unicode hyphen/dash — normalise so date & number checks can't be bypassed
     body = body.translate({0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2013: "-", 0x2014: "-", 0x2212: "-"})
-    # bloat guard — a non-artifact nudge over ~52 words is a memo; force a rewrite
-    if not fs.get("artifact_expected") and len(body.split()) > 52:
-        return False, f"too long ({len(body.split())} words) - tighten to under 45"
+    # bloat guard — a non-artifact nudge over ~58 words is a memo; force a rewrite
+    if not fs.get("artifact_expected") and len(body.split()) > 58:
+        return False, f"too long ({len(body.split())} words) - tighten to under 50"
     low = body.lower()
     for j in _JARGON:
         if j in low:
