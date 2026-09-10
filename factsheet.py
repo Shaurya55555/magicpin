@@ -424,19 +424,17 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
     slot_cta = ""
     _slots = payload.get("available_slots") or payload.get("slots") or []
     _labels = [s.get("label") for s in _slots if isinstance(s, dict) and s.get("label")]
+    # Only pin an EXACT numbered CTA when it is grounded in real payload data (slot labels).
+    # For everything else, hand the LLM the decision in words (cta_hint) and let it phrase the
+    # ask itself - a fixed per-kind sentence made 11 messages end identically and cost Engagement.
     if len(_labels) >= 2:
         slot_cta = f"reply 1 for {_labels[0]}, 2 for {_labels[1]} (or say another time)"
     elif len(_labels) == 1:
         slot_cta = f"reply YES to take {_labels[0]}, or say another time"
     else:
         slot_cta = {
-            "competitor_opened": "reply 1 to sharpen the offer this week, 2 to keep it as is",
-            "gbp_unverified": "reply 1 to start verification now, 2 to leave it for now",
             "appointment_tomorrow": "reply 1 to confirm, 2 to reschedule",
-            "renewal_due": "reply 1 to renew now, 2 to change something first",
             "chronic_refill_due": "reply CONFIRM to dispatch, or call if the dose changed",
-            "winback_eligible": "reply 1 to see what reactivating gets back, 2 not now",
-            "perf_dip": "reply 1 to run a quick diagnostic, 2 not now",
         }.get(kind, "")
 
     return {

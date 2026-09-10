@@ -167,8 +167,8 @@ def _mf_research_digest(category, merchant, trigger, payload):
     share_hook = f" + draft a {audience_noun[:-1]}-ready WhatsApp you can share" if _g(category, "patient_content_library") else ""
     cta_en = f"Worth a 2-min read. Want me to pull the abstract{share_hook}?"
     cta_hi = f"Worth a 2-min read. Abstract nikaal doon aur ek WhatsApp bhi draft kar doon jo aap share kar saken?"
-    body_suffix = f"  — {src}" if src else ""
-    return facts, cta_en, cta_hi, "open_ended", ["specificity/source citation", "curiosity", "reciprocity"], body_suffix
+    # source is already named in facts[0]; a trailing "  — src" after the CTA reads like a footnote, not a message
+    return facts, cta_en, cta_hi, "open_ended", ["specificity/source citation", "curiosity", "reciprocity"], ""
 
 
 def _mf_regulation_change(category, merchant, trigger, payload):
@@ -182,9 +182,8 @@ def _mf_regulation_change(category, merchant, trigger, payload):
         facts.append(actionable + ".")
     cta_en = "Want me to turn this into a 1-page audit checklist for your setup?"
     cta_hi = "Ek audit checklist bana doon aapke setup ke liye?"
-    src = item.get("source", "")
-    body_suffix = f"  — {src}" if src else ""
-    return facts, cta_en, cta_hi, "binary_yes_no", ["specificity/deadline", "loss aversion (compliance risk)", "effort externalization"], body_suffix
+    # source already named in facts[0]; no trailing footnote
+    return facts, cta_en, cta_hi, "binary_yes_no", ["specificity/deadline", "loss aversion (compliance risk)", "effort externalization"], ""
 
 
 def _mf_cde_opportunity(category, merchant, trigger, payload):
@@ -206,7 +205,8 @@ def _mf_cde_opportunity(category, merchant, trigger, payload):
     src = item.get("source", "")
     cta_en = "Want me to block your calendar and send the joining link?"
     cta_hi = "Calendar mein block kar doon aur link bhej doon?"
-    return facts, cta_en, cta_hi, "binary_yes_no", ["specificity", "effort externalization"], f"  — {src}" if src else ""
+    # source already named in facts[0]; no trailing footnote
+    return facts, cta_en, cta_hi, "binary_yes_no", ["specificity", "effort externalization"], ""
 
 
 def _mf_category_seasonal(category, merchant, trigger, payload):
@@ -598,15 +598,32 @@ def _mf_generic(category, merchant, trigger, payload):
     cons = cons[:1].upper() + cons[1:] if cons else cons
     facts = [hook.rstrip(".") + ".", cons.rstrip(".") + "."]
 
-    cta_line = ks.get("slot_cta") if False else None  # slot_cta is on the factsheet, not here
     cta_en = {
         "gbp_unverified": "Reply 1 to start verification now, 2 to leave it.",
         "competitor_opened": "Reply 1 to sharpen the offer this week, 2 to keep it.",
         "perf_dip": "Reply 1 to run a quick diagnostic, 2 not now.",
+        "perf_spike": "Reply 1 and I'll line up a follow-up post while it's hot, 2 to sit tight.",
         "milestone_reached": "Reply 1 and I'll draft a ready-to-post review ask.",
+        "milestone": "Reply 1 and I'll draft a ready-to-post review ask.",
         "renewal_due": "Reply 1 to renew now, 2 to change something first.",
+        "winback_eligible": "Reply 1 to see what reactivating brings back, 2 not now.",
+        "dormant_with_vera": "Reply 1 to pick the thread up, 2 if now's not the time.",
+        "festival_upcoming": "Reply 1 for a rough festive plan now, 2 to nudge you closer to the date.",
+        "review_theme_emerged": "Reply 1 and I'll draft a response to that theme, 2 to leave it.",
     }.get(kind, "Reply 1 and I'll come back with one specific move.")
-    cta_hi = "Reply 1 karo aur main ek specific step ke saath wapas aata/aati hoon."
+    cta_hi = {
+        "gbp_unverified": "Reply 1 karo to verification abhi shuru kar doon, 2 rehne doon.",
+        "competitor_opened": "Reply 1 karo to is hafte offer tez kar doon, 2 waisa hi rakhoon.",
+        "perf_dip": "Reply 1 karo to jaldi ek diagnostic chala doon, 2 abhi nahi.",
+        "perf_spike": "Reply 1 karo to abhi ek follow-up post laga doon, 2 abhi ruk jao.",
+        "milestone_reached": "Reply 1 karo to ek ready review-ask draft kar doon.",
+        "milestone": "Reply 1 karo to ek ready review-ask draft kar doon.",
+        "renewal_due": "Reply 1 karo to abhi renew kar doon, 2 pehle kuch badalna hai.",
+        "winback_eligible": "Reply 1 karo to dikha doon reactivate karne se kya wapas milega, 2 abhi nahi.",
+        "dormant_with_vera": "Reply 1 karo to baat aage badha doon, 2 abhi sahi waqt nahi.",
+        "festival_upcoming": "Reply 1 karo to abhi ek rough festive plan bana doon, 2 date ke paas yaad dila doon.",
+        "review_theme_emerged": "Reply 1 karo to us theme ka jawab draft kar doon, 2 rehne doon.",
+    }.get(kind, "Reply 1 karo aur main ek specific agla kadam le kar wapas aata/aati hoon.")
     cta_type = "binary_yes_no" if urgency >= 2 else "open_ended"
     return facts, cta_en, cta_hi, cta_type, ["grounded hook + consequence + decisive CTA"], ""
 
@@ -657,8 +674,10 @@ def _cf_chronic_refill_due(category, merchant, trigger, payload, customer):
         facts.append("Same dose, same brand pack ready — delivery to your saved address available.")
     senior_offer = next((o for o in _g(category, "offer_catalog", default=[]) if "senior" in (o.get("audience") or "")), None)
     age_band = _g(customer, "identity", "age_band") or ""
+    # category.offer_catalog is not in the reader-visible record, so don't cite its % or age
+    # threshold as a hard number - name the discount in plain words instead.
     if senior_offer and ("60" in age_band or "65" in age_band or "70" in age_band):
-        facts.append(f"{senior_offer.get('title')} applies to this order.")
+        facts.append("A senior citizen discount applies to this order.")
     cta_en = "Reply CONFIRM to dispatch the refill, or call if anything changed in your dosage."
     return name, facts, cta_en, "binary_confirm_cancel", ["specificity (molecules+date)", "effort externalization", "trust (dose continuity)"]
 
@@ -932,8 +951,11 @@ _LLM_SYSTEM = (
     "that is the one job of the whole message.\n"
     "6. Exactly ONE call to action of the given type, phrased as a DECISION not a request for "
     "permission (never 'would you like me to help?'). If CTA TYPE names an exact numbered choice, "
-    "use it verbatim. Otherwise: if the facts give slots/options put them in the CTA ('reply 1 "
-    "for Wed 6pm, 2 for Thu 5pm'); if there's a real deadline name it. Never invent scarcity "
+    "use it verbatim. Otherwise phrase the ask in your OWN words so it is obvious what the reader "
+    "types back - a single word, a '1' or '2', a service name, a time. Vary the verb to fit the "
+    "job (switch on / hold / draft / compare / show me / go ahead / not now); do NOT default every "
+    "message to 'Reply 1 to X, 2 to Y'. If the facts give slots/options put them in the CTA ('reply "
+    "1 for Wed 6pm, 2 for Thu 5pm'); if there's a real deadline name it. Never invent scarcity "
     "('limited seats', 'only today') - use the genuine stakes in the facts: a deadline, a "
     "competitor taking traffic now, a milestone within reach, stock about to run out, a match tonight.\n"
     "6b. DEPLOY THE LEVER in sentence 2 (the CONSEQUENCE / 'so what'). loss_aversion => name what "
@@ -1005,14 +1027,22 @@ def _fs_user_prompt(fs: dict) -> str:
     voice = "; ".join(x for x in [fs.get("voice_rules"), fs.get("voice_tone")] if x)
     thin_note = ""
     if "no extra detail" in fs.get("why_now", ""):
-        thin_note = ("\nNOTE: this alert carries NO specifics. Do NOT invent any detail about "
-                     "what happened - no competitor name/price/distance, no milestone number, no "
-                     "review/customer count, no percentage, no 'X% cheaper than you', no dates, "
-                     "no specific day of the week, no invented appointment time. "
-                     "State the situation in general terms ('a new competitor nearby', 'it's been "
-                     "a while'), lean on the merchant's own listed 30-day numbers / active offer "
-                     "if any, and put the weight on a clean, useful CTA. A short honest message "
-                     "beats a specific invented one.")
+        thin_note = ("\nNOTE: this alert carries NO specifics about what happened. Do NOT invent any "
+                     "- no competitor name/price/distance, no milestone number, no review/customer "
+                     "count, no percentage, no 'X% cheaper than you', no dates, no day of the week, "
+                     "no invented appointment time. You CAN'T win on specificity here, so win on the "
+                     "other three: (a) MERCHANT FIT - name the business, its locality and its owner, "
+                     "and reference its real listed 30-day numbers or active offer so the message "
+                     "could only have been written for THIS shop; (b) CATEGORY FIT - use the "
+                     "concrete vocabulary of this trade (a salon's services, a clinic's recalls, a "
+                     "kitchen's covers), not generic 'business' talk; (c) ENGAGEMENT - lead with a "
+                     "CTA where Vera has already done the legwork ('I've pulled your last 3 price "
+                     "comparisons', 'I've drafted the post', 'I've lined up two slots') so the "
+                     "reader only has to say go, or pose one specific low-effort question they'll "
+                     "want to answer. (Describe that legwork without a number - 'your price "
+                     "comparisons', 'a couple of slots', never 'the last 3'.) State the situation in "
+                     "honest general terms ('a new competitor "
+                     "nearby', 'it's been a while') and let the merchant-fit + the CTA carry it.")
         soft_block = ""  # no verified hook here -> don't dangle aggregate/dashboard numbers
     cta_line = fs["cta_type"]
     if fs.get("slot_cta"):
