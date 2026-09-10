@@ -637,8 +637,7 @@ def _cf_recall_due(category, merchant, trigger, payload, customer):
     slots = payload.get("available_slots", [])
     offs = active_offers(merchant)
     name = _g(customer, "identity", "name") or "there"
-    last_visit = payload.get("last_service_date")
-    facts = [f"It's been a while since your last visit" + (f" ({last_visit})" if last_visit else "") + f" — your {service} is due."]
+    facts = [f"It's been a while since your last visit — your {service} is due."]
     if slots and len(slots) < 2:
         labels = [s.get("label") for s in slots if s.get("label")]
         if labels:
@@ -928,7 +927,9 @@ _LLM_SYSTEM = (
     "facts. An appointment or refill reminder just confirms the appointment or refill.\n"
     "  b) open with a raw statistic. The first sentence is the REASON you're writing now "
     "(the WHY NOW), addressed to the person by name.\n"
-    "  c) stack numbers. Two at most in the whole message.\n\n"
+    "  c) dump every metric in a comma-separated list. Use the 1-3 numbers that build the "
+    "point (a figure, its peer benchmark, a price); a good message can carry three grounded "
+    "numbers, a bad one reads like a dashboard.\n\n"
     "ABSOLUTE RULES:\n"
     "1. VERIFIED FACTS may be stated plainly. ATTRIBUTED FACTS are also real, but you must "
     "introduce each one with its given attribution phrase (e.g. 'your dashboard shows', "
@@ -959,8 +960,10 @@ _LLM_SYSTEM = (
     "('limited seats', 'only today') - use the genuine stakes in the facts: a deadline, a "
     "competitor taking traffic now, a milestone within reach, stock about to run out, a match tonight.\n"
     "6b. DEPLOY THE LEVER in sentence 2 (the CONSEQUENCE / 'so what'). loss_aversion => name what "
-    "slips away. social_proof => 'businesses like yours' / 'other salons nearby' are already doing "
-    "this - pattern only, NEVER an invented peer number. curiosity => the specific gap. urgency "
+    "slips away. social_proof => 'businesses like yours' / 'other salons nearby' as a pattern only "
+    "- NEVER an invented peer number OR magnitude ('double the traffic', '3x more', 'twice as "
+    "many') and never a claim about what named peers are doing that isn't in the facts. curiosity "
+    "=> the specific gap. urgency "
     "=> the clock, concretely. warmth => personal, no guilt. reciprocity => you've done the work, "
     "they just say go. Make it sting or pull.\n"
     "7. If ARTIFACT is yes, include the actual drafted thing (the pricing tiers / the post text / "
@@ -968,25 +971,85 @@ _LLM_SYSTEM = (
     "STRUCTURE (tier labels, session counts, a schedule) but must NOT invent a rupee price, a "
     "percentage discount, or a minimum-order value that isn't in the facts - reuse a real "
     "listed price or leave it as 'price to confirm'. Do not restate the same figures in both "
-    "the lead-in sentence and the draft - state each number once.\n"
+    "the lead-in sentence and the draft - state each number once. A drafted POST is public "
+    "customer-facing copy: NEVER put the merchant's private analytics (view counts, call "
+    "counts, leads, click rate, week-on-week deltas) inside it - those belong only in the "
+    "sentence you write to the owner, if at all. Keep the whole message under ~70 words.\n"
     "8. Match the VOICE. Avoid the TABOO words entirely.\n"
     "9. If CODE-SWITCH is yes, mix natural Hindi-English the way an Indian shop owner texts.\n"
     "10. No internal jargon (never write 'trigger', 'payload', 'signal', 'CTR', 'the system'). "
     "Say 'click rate' not 'CTR'.\n"
-    "11. 2 to 4 sentences, roughly 30-52 words (a drafted artifact may be longer). No 'Hi/Hello' "
+    "11. 2 to 4 sentences, about 40-55 words (a drafted artifact may run longer). No 'Hi/Hello' "
     "beyond the name, no sign-off, no subject line. Output only the message text.\n"
-    "12. Keep numbers tight. A SECOND number is fine when it completes the same picture: "
-    "views AND calls from the same 30-day snapshot; a competitor's price vs yours; 1.5 to "
-    "1.0 mSv; 5 reviews from 150; a seasonal trend line (ORS +40%, sunscreen +38%). What "
-    "you must NEVER do is a THIRD unrelated metric or a comma-separated list ('X views, Y "
-    "calls, Z leads, W% click rate') - that's a report, not a message.\n"
+    "12. EVERY number, price, date, percentage or count you write must come from the FACTS "
+    "block (which already includes the 30-day performance, week-on-week movement, the peer "
+    "benchmark for similar businesses nearby, customer-record totals, plan days left, offer "
+    "prices, the trigger payload, and any cited study figure). Copy them verbatim; never "
+    "invent, estimate or round a new one. Use AT MOST 3 numeric facts in the whole message, "
+    "and pick ones that build ONE point - a figure plus its peer benchmark ('2.1% vs the ~3% "
+    "typical nearby'), a figure plus its move ('980 views, down 22% on the week'), a derived "
+    "count ('22 of your 240 patients'). NEVER a comma-string of parallel metrics ('X views, Y "
+    "calls, Z leads') - that reads as a dashboard and loses points.\n"
     "13. Shape: (1) hook = the WHY NOW, named to THIS business; (2) consequence carrying the "
     "lever; (3) the decisive CTA. Prove you noticed the one thing that matters now - not that "
     "you know everything about the business.\n"
-    "14. For a CUSTOMER message: you MAY use the DAYS-SINCE number, what they came in for, the "
-    "service due, the due date, the slot times and the medicines - state them plainly. You may "
-    "NOT state a specific past-visit calendar date (like '2026-04-01') or a lifetime visit total.\n"
+    "14. For a CUSTOMER message: use the DAYS-SINCE number, what they came in for, the service "
+    "due, the due date, the slot times, the medicines, and - if listed - roughly how long since "
+    "their last visit ('about 5 months') and their visit count ('you've been in 4 times'). "
+    "State these plainly. Just don't write a raw calendar date ('2026-05-12'); say the elapsed "
+    "time in words.\n"
 )
+
+
+# Which metric families each trigger kind actually needs. Payload-derived facts, active
+# offers and the "business you're writing from / where" identity facts are ALWAYS kept.
+_ALWAYS_KEEP = ("active offer running", "the business you're writing from", "where the business is",
+                "their last visit was in", "times they have visited before",
+                "what they came in for last time", "their most frequent service")
+_KIND_FACTS = {
+    "perf_dip":            ("vs the previous week", "in last 30 days", "similar businesses nearby"),
+    "perf_spike":          ("vs the previous week", "in last 30 days", "similar businesses nearby", "likely driver"),
+    "seasonal_perf_dip":   ("vs the previous week", "in last 30 days", "retention"),
+    "gbp_unverified":      ("views in last 30 days", "listing click rate", "similar businesses nearby", "something true"),
+    "competitor_opened":   ("competitor", "distance", "their offer", "opened", "views in last 30 days"),
+    "renewal_due":         ("days left on the magicpin plan", "magicpin plan name", "in last 30 days", "not seen in 6"),
+    "winback_eligible":    ("days left on the magicpin plan", "not seen in 6", "in last 30 days", "leads"),
+    "milestone_reached":   ("milestone", "reviews", "review", "count", "rating"),
+    "review_theme_emerged":("theme", "occurrences", "review", "what recent reviews"),
+    "curious_ask_due":     ("vs the previous week", "views in last 30 days"),
+    "dormant_with_vera":   ("days since", "last discussed", "in last 30 days"),
+    "active_planning_intent": ("intent", "topic", "merchant last message", "something true", "in last 30 days"),
+    "category_seasonal":   ("trend", "demand", "season"),
+    "festival_upcoming":   ("festival", "days"),
+    "ipl_match_today":     ("match", "venue", "time", "start"),
+    "research_digest":     ("higher-risk adult patients", "unique customers", "retention"),
+    "cde_opportunity":     ("higher-risk adult patients", "credits", "fee"),
+    "regulation_change":   ("deadline", "effective"),
+}
+
+
+def _curate_hard_facts(fs: dict, kind: str) -> list:
+    facts = fs.get("hard_facts", [])
+    if fs.get("scope") == "customer" or fs.get("customer"):
+        return facts  # customer sheets are already tight
+    wanted = _KIND_FACTS.get(kind)
+    if not wanted:
+        return facts[:8]
+    keep, extra = [], []
+    for f in facts:
+        lbl = f["label"].lower()
+        if any(k in lbl for k in _ALWAYS_KEEP) or _is_payload_fact(f, fs):
+            keep.append(f)
+        elif any(w in lbl for w in wanted):
+            keep.append(f)
+        else:
+            extra.append(f)
+    # if the curated set is thin, top up with a couple of the held-back metrics
+    return (keep + extra[:1])[:6]
+
+
+def _is_payload_fact(f: dict, fs: dict) -> bool:
+    return f["label"] in set(fs.get("payload_keys") or [])
 
 
 def _fs_user_prompt(fs: dict) -> str:
@@ -998,31 +1061,26 @@ def _fs_user_prompt(fs: dict) -> str:
                f"{cust.get('language_pref') or 'en'}; age band {cust.get('age_band') or 'n/a'} "
                f"(for tone only — do not state their age).\n"
                f"USE the concrete facts in the block. If a DAYS-SINCE number is listed you MUST "
-               f"state it ('it's been 57 days'). Also use what they were working on / came in "
-               f"for, the service due, the due date, the slot times, the medicines, the run-out "
-               f"date. These are all fair game and make the message land. "
-               f"The ONLY things off-limits are a specific past-visit CALENDAR DATE (like "
-               f"'2026-04-01') and a lifetime visit TOTAL - those aren't in the record you can "
-               f"see. Name the business explicitly.")
+               f"state it ('it's been 57 days'). If their last visit month and visit count are "
+               f"listed you MAY use them ('it's been about 5 months', 'you've been in a few "
+               f"times'). Also use what they came in for, the service due, the due date, the "
+               f"slot times, the medicines, the run-out date - all fair game. Don't state a raw "
+               f"calendar date like '2026-05-12'; phrase elapsed time in words. Name the "
+               f"business explicitly.")
     else:
         who = "READER: the owner of this business. You are writing AS Vera, magicpin's growth partner, TO the owner."
-    # Show views + calls (the 30-day snapshot the judge reads as specificity); hide the
-    # tail (directions, leads) so the model can't build a comma-separated report.
-    _KEEP2 = {"views in last 30 days", "calls in last 30 days"}
-    _DROP = {"direction requests in last 30 days", "leads in last 30 days"}
     kind = fs.get("kind", "")
-    shown = [f for f in fs["hard_facts"] if f["label"] not in _DROP]
-    hard = "\n".join(f"- {f['label']}: {f['value']}" for f in shown) \
+    # Every hard fact traces to a field in the four pushed contexts. But handing the writer
+    # all ~20 invites a metrics dump - curate to what THIS trigger actually needs, keep the
+    # payload/offer/identity facts always, cap the rest.
+    hard = "\n".join(f"- {f['label']}: {f['value']}" for f in _curate_hard_facts(fs, kind)) \
         or "- (no hard metrics available - write a specific but number-free message)"
-    # week-on-week deltas read as fabrication to a narrow-view scorer even when attributed,
-    # so don't even offer them to the writer. Keep digest sources / review themes / plan days.
-    soft_facts = [f for f in fs.get("soft_facts", [])
-                  if "week-on-week" not in f["label"]][:3]
+    soft_facts = list(fs.get("soft_facts", []))[:3]
     soft = "\n".join(f"- {f['label']}: {f['value']}  [introduce with: {f['attribute_as']}]"
                      for f in soft_facts)
     soft_block = (
-        "\n\nATTRIBUTED FACTS (real, but the reader can't see your dashboard - use AT MOST ONE, "
-        "and only if it strengthens the WHY NOW; you MUST name the source when you use it):\n" + soft
+        "\n\nATTRIBUTED FACTS (real - name the source when you use one; use the ones that "
+        "sharpen the WHY NOW, skip the rest):\n" + soft
     ) if soft else ""
     voice = "; ".join(x for x in [fs.get("voice_rules"), fs.get("voice_tone")] if x)
     thin_note = ""
