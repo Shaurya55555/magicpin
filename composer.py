@@ -1041,7 +1041,8 @@ _KIND_FACTS = {
     "perf_dip":            ("vs the previous week", "in last 30 days", "similar businesses nearby"),
     "perf_spike":          ("vs the previous week", "in last 30 days", "similar businesses nearby", "likely driver"),
     "seasonal_perf_dip":   ("vs the previous week", "in last 30 days", "retention rate"),
-    "gbp_unverified":      ("views in last 30 days", "listing click rate", "similar businesses nearby", "something true"),
+    "gbp_unverified":      ("views in last 30 days", "listing click rate", "similar businesses nearby", "something true",
+                            "uplift", "verified", "verification"),
     "competitor_opened":   ("competitor", "distance", "their offer", "opened", "views in last 30 days"),
     "renewal_due":         ("days left on the magicpin plan", "magicpin plan name", "views in last 30 days", "leads in last 30 days", "not seen in 6"),
     "winback_eligible":    ("days left on the magicpin plan", "not seen in 6", "views in last 30 days", "leads in last 30 days"),
@@ -1079,17 +1080,19 @@ def _curate_hard_facts(fs: dict, kind: str) -> list:
     wanted = _KIND_FACTS.get(kind)
     if not wanted:
         return facts[:8]
-    keep, extra = [], []
+    mandatory, kind_matched, extra = [], [], []
     for f in facts:
         lbl = f["label"].lower()
         if any(k in lbl for k in _ALWAYS_KEEP) or _is_payload_fact(f, fs):
-            keep.append(f)
+            mandatory.append(f)
         elif any(w in lbl for w in wanted):
-            keep.append(f)
+            kind_matched.append(f)
         else:
             extra.append(f)
-    # if the curated set is thin, top up with a couple of the held-back metrics
-    return (keep + extra[:1])[:6]
+    # mandatory facts (payload + active offer + identity) are NEVER truncated by the cap -
+    # a previous version applied [:6] across the whole combined list, so a guaranteed-keep
+    # fact inserted late (by build_factsheet's emission order) could still get sliced off.
+    return mandatory + kind_matched[:9] + extra[:1]
 
 
 def _is_payload_fact(f: dict, fs: dict) -> bool:
