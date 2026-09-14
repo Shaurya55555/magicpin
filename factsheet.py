@@ -671,6 +671,26 @@ def _semantic_metric_check(body: str, fs: dict) -> tuple[bool, str]:
     return True, "ok"
 
 
+# A field-deletion test found the model inventing WHAT a past conversation covered when no
+# conversation_history was actually pushed - a prose claim the number/date validator can't
+# see. Narrowly scoped to the one proven failure mode (not a general semantic checker): a
+# phrase asserting the CONTENT of a prior conversation, without the fact sheet actually
+# having one. Referencing that time has simply passed ("it's been a while") is unaffected.
+_PAST_TOPIC_CLAIM = re.compile(
+    r"\b(spoke about|talked about|discussed|you (had )?mentioned|we (had )?discussed|"
+    r"mentioned that|baat kar rahe the|humne baat ki thi|aapne kaha tha|kaha tha ki)\b",
+    re.IGNORECASE)
+
+
+def _unsupported_history_claim_check(body: str, fs: dict) -> tuple[bool, str]:
+    if not _PAST_TOPIC_CLAIM.search(body):
+        return True, "ok"
+    has_topic_fact = any(f["label"] == "what was last discussed" for f in fs.get("soft_facts", []))
+    if not has_topic_fact:
+        return False, "claims the content of a past conversation, but no conversation_history was actually provided"
+    return True, "ok"
+
+
 def validate_output(body: str, fs: dict) -> tuple[bool, str]:
     if not body or len(body.strip()) < 25:
         return False, "empty/too short"
@@ -746,6 +766,10 @@ def validate_output(body: str, fs: dict) -> tuple[bool, str]:
         return False, why
 
     ok, why = _phantom_offer_check(body, fs)
+    if not ok:
+        return False, why
+
+    ok, why = _unsupported_history_claim_check(body, fs)
     if not ok:
         return False, why
 
