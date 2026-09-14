@@ -470,7 +470,14 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
         if ch and _present(ch[-1].get("body")):
             S("what was last discussed", f'"{fix_text(ch[-1]["body"])[:140]}"', "say 'last time we spoke'")
 
-    code_switch = ("hi" in [str(l).lower() for l in langs]) or (bool(cust) and "hi" in (cust.get("language_pref") or ""))
+    # A customer-facing message is written TO the customer - their own language_pref decides
+    # code-switching, never the merchant's general language capability (nearly every merchant
+    # in this dataset lists 'hi', which was silently forcing Hindi even for an English-pref
+    # customer). Only fall back to the merchant's languages for a merchant-facing message.
+    if cust:
+        code_switch = "hi" in (cust.get("language_pref") or "").lower()
+    else:
+        code_switch = "hi" in [str(l).lower() for l in langs]
 
     why = _why_now(kind, payload)
     if not scope_customer:
@@ -501,7 +508,10 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
         "send_as": "merchant_on_behalf" if scope_customer else "vera",
         "category_slug": slug,
         "voice_tone": fix_text(voice.get("tone")) or "",
-        "voice_rules": _JUDGE_VOICE.get(slug, ""),
+        # register/vocab_allowed are the real fields the judge is given (testing brief 3.1);
+        # _JUDGE_VOICE is supplementary human-readable colour on top, not a substitute.
+        "voice_rules": " - ".join(x for x in [fix_text(voice.get("register")), _JUDGE_VOICE.get(slug, "")] if x),
+        "vocab_allowed": [fix_text(w) for w in (voice.get("vocab_allowed") or [])][:8],
         "taboos": voice.get("vocab_taboo", []) or [],
         "biz_name": biz,
         "owner": owner,

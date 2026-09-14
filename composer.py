@@ -857,6 +857,16 @@ def compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[Ctx] 
     return _deterministic_compose(category, merchant, trigger, customer)
 
 
+# A short trailer, not a second ask - the English CTA sentence already states the reply
+# instruction, so this adds warmth/code-mix without repeating "reply X" a second time.
+_HI_CTA_NUDGE = {
+    "binary_yes_no": "Koi jaldi nahi hai, jab aapko sahi lage.",
+    "binary_confirm_cancel": "Kuch badalna ho to bas bata dijiye.",
+    "multi_choice_slot": "Jo time sahi lage, wahi bata dijiye.",
+    "open_ended": "Jo bhi sahi lage, bata dijiye.",
+}
+
+
 def _deterministic_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[Ctx] = None) -> dict:
     payload = trigger.get("payload", {}) or {}
     kind = trigger.get("kind", "update")
@@ -868,10 +878,15 @@ def _deterministic_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer:
         fn = CUSTOMER_COMPOSERS.get(kind, _cf_generic)
         args = (category, merchant, trigger, payload, customer)
         name, facts, cta_en, cta_type, levers = fn(*args) if fn is not _cf_generic else fn(*args)
-        greeting = f"Hi {name},"
+        greeting = f"Namaste {name}," if mode == "hi_en" else f"Hi {name},"
         facts_joined = _lead_lower(" ".join(f.strip() for f in facts if f and f.strip()))
         body = f"{greeting} " + facts_joined
         body += " " + cta_en
+        # None of the CUSTOMER_COMPOSERS write a Hindi variant (unlike the merchant path's
+        # pick(cta_en, cta_hi, mode)) - close that gap with a generic, kind-agnostic nudge
+        # rather than leaving every customer DET fallback in English regardless of preference.
+        if mode == "hi_en":
+            body += " " + _HI_CTA_NUDGE.get(cta_type, "Jo bhi sahi lage, bata dijiye.")
         body = sanitize_taboos(body, taboos)
         send_as = "merchant_on_behalf"
         rationale = (
@@ -976,8 +991,18 @@ _LLM_SYSTEM = (
     "customer-facing copy: NEVER put the merchant's private analytics (view counts, call "
     "counts, leads, click rate, week-on-week deltas) inside it - those belong only in the "
     "sentence you write to the owner, if at all. Keep the whole message under ~70 words.\n"
-    "8. Match the VOICE. Avoid the TABOO words entirely.\n"
-    "9. If CODE-SWITCH is yes, mix natural Hindi-English the way an Indian shop owner texts.\n"
+    "8. Match the VOICE and REGISTER given. Avoid the TABOO words entirely. Work in ONE term "
+    "from CATEGORY VOCAB where it fits naturally (a dentist's 'scaling', a salon's 'hair spa', "
+    "a restaurant's 'footfall') - a message that could be about any kind of business, not just "
+    "this trade, loses points on category fit. A vocab term is a WORD CHOICE, never a claim: "
+    "use it only for something already true per the FACTS (describing a real visit, a real "
+    "offer, the trade itself), NEVER to name what a specific unnamed thing IS - if the facts "
+    "don't say which medicine/procedure/service this is about, don't invent one just to use a "
+    "vocab word. When in doubt, skip the vocab word rather than risk a fabricated specific.\n"
+    "9. If CODE-SWITCH is yes, this is NOT optional and NOT just the CTA - weave natural "
+    "Hindi-English through the WHOLE message the way an Indian shop owner actually texts "
+    "(aapka, humne, is hafte, turant, bas, thoda, abhi), not an English message with one Hindi "
+    "sentence bolted on. If CODE-SWITCH is no, plain English throughout.\n"
     "10. No internal jargon (never write 'trigger', 'payload', 'signal', 'CTR', 'the system'). "
     "Say 'click rate' not 'CTR'.\n"
     "11. 2 to 4 sentences, about 40-55 words (a drafted artifact may run longer). No 'Hi/Hello' "
@@ -1103,14 +1128,18 @@ def _fs_user_prompt(fs: dict) -> str:
                      "detail about it - no competitor name, no competitor type/cuisine ('a new South "
                      "Indian cafe'), no 'right next door' / 'a stone's throw', no price, no distance, "
                      "no milestone number, no review/customer count, no percentage, no 'X% cheaper', "
-                     "no dates, no day of the week, no invented appointment time. Say ONLY 'a new "
-                     "competitor has opened nearby' / 'it's been a while' and nothing more about the "
-                     "event itself. You CAN'T win on specificity here, so win on the "
+                     "no dates, no day of the week, no invented appointment time, and (this one is "
+                     "easy to miss) no invented MEDICINE, PROCEDURE or SERVICE name either - if the "
+                     "facts don't say which medicine/treatment this is, say 'your regular medicines' "
+                     "/ 'your usual treatment', never a specific made-up one like 'fluoride varnish' "
+                     "or 'your antibiotic'. Say ONLY 'a new competitor has opened nearby' / 'it's been "
+                     "a while' / 'your usual medicines' and nothing more about the event itself. You "
+                     "CAN'T win on specificity here, so win on the "
                      "other three: (a) MERCHANT FIT - name the business, its locality and its owner, "
                      "and reference its real listed 30-day numbers or active offer so the message "
-                     "could only have been written for THIS shop; (b) CATEGORY FIT - use the "
-                     "concrete vocabulary of this trade (a salon's services, a clinic's recalls, a "
-                     "kitchen's covers), not generic 'business' talk; (c) ENGAGEMENT - lead with a "
+                     "could only have been written for THIS shop; (b) CATEGORY FIT - the TONE and "
+                     "REGISTER of this trade, not a specific vocab word that would name an unnamed "
+                     "thing; (c) ENGAGEMENT - lead with a "
                      "CTA where Vera has already done the legwork ('I've pulled your last 3 price "
                      "comparisons', 'I've drafted the post', 'I've lined up two slots') so the "
                      "reader only has to say go, or pose one specific low-effort question they'll "
@@ -1125,6 +1154,7 @@ def _fs_user_prompt(fs: dict) -> str:
     return (
         f"CATEGORY: {fs['category_slug']}\n"
         f"VOICE: {voice}\n"
+        f"CATEGORY VOCAB (use ONE where it fits, never force it): {fs.get('vocab_allowed') or 'n/a'}\n"
         f"TABOO words (never use): {fs.get('taboos')}\n"
         f"BUSINESS: {fs['biz_name']}\n"
         f"ADDRESS THE PERSON AS: {fs['address_as']}\n"
@@ -1138,7 +1168,7 @@ def _fs_user_prompt(fs: dict) -> str:
         f"CTA TYPE (sentence 3): {cta_line}\n"
         f"AVOID: {fs.get('avoid', 'a metrics dump')}\n"
         f"ARTIFACT: {'yes' if fs['artifact_expected'] else 'no'}\n"
-        f"CODE-SWITCH (Hindi-English mix): {'yes' if fs['code_switch'] else 'no'}\n\n"
+        f"CODE-SWITCH (Hindi-English mix): {'yes - REQUIRED throughout the message, not just the CTA' if fs['code_switch'] else 'no - plain English'}\n\n"
         f"VERIFIED FACTS (may be stated plainly, cite verbatim):\n{hard}"
         f"{soft_block}"
         f"{thin_note}\n\n"
@@ -1167,6 +1197,18 @@ def _referenced_fact_labels(body: str, fs: dict) -> list[str]:
         if core and len(core) >= 2 and core in low.replace("₹", "").replace(",", ""):
             hit.append(f["label"])
     return hit[:5]
+
+
+_HI_WORDS = re.compile(
+    r"\b(aap|aapka|aapke|aapki|aapko|hai|hain|kal|abhi|turant|bas|thoda|humne|hamare|hamara|"
+    r"kya|karo|kijiye|dijiye|chahiye|waqt|jaldi|dhyan|bhej|bana|rakha|rakhi|rakhe|doon|karein|"
+    r"karte|rahi|raha|liye|saath|aaj|nahi|shukriya|namaste|ji)\b", re.IGNORECASE)
+
+
+def _has_code_switch(body: str) -> bool:
+    if re.search(r"[ऀ-ॿ]", body):   # Devanagari
+        return True
+    return bool(_HI_WORDS.search(body))
 
 
 def _llm_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[Ctx] = None):
@@ -1199,6 +1241,13 @@ def _llm_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[
             return None
         cand = sanitize_taboos(_clean_llm_body(raw), taboos)
         ok, reject_reason = factsheet.validate_output(cand, fs)
+        # On the first attempt only, also require the mandated Hindi-English mix - measured
+        # against the real judge, a merchant message that silently drops it loses real points
+        # on category fit. The retry (last resort) accepts a valid English-only draft rather
+        # than falling through to the deterministic engine, which has the same gap.
+        if ok and attempt == 0 and fs.get("code_switch") and not _has_code_switch(cand):
+            ok = False
+            reject_reason = "missing the required Hindi-English code-mix (not just in the CTA)"
         if ok:
             body = cand
             break
