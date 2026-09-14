@@ -519,6 +519,10 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
         "locality": locality or "",
         "languages": langs,
         "code_switch": bool(code_switch),
+        # category.voice.code_mix varies by trade (gyms: "english_primary_some_hindi" - a
+        # lighter touch than the "hindi_english_natural" full mix dentists/salons/restaurants/
+        # pharmacies call for). Audited across all 5 categories - gyms is the one outlier.
+        "code_mix_style": voice.get("code_mix") or "hindi_english_natural",
         "customer": cust,
         "why_now": why,
         "purpose": _KS.get(kind, {}).get("purpose", "help them take one clear next step"),

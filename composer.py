@@ -1089,6 +1089,15 @@ def _is_payload_fact(f: dict, fs: dict) -> bool:
     return f["label"] in set(fs.get("payload_keys") or [])
 
 
+def _code_switch_line(fs: dict) -> str:
+    if not fs.get("code_switch"):
+        return "no - plain English"
+    if fs.get("code_mix_style") == "english_primary_some_hindi":
+        return ("yes, LIGHT TOUCH - English-primary, with an occasional natural Hindi word or "
+                "phrase (not a full sentence flip). This trade's voice leans English.")
+    return "yes - REQUIRED throughout the message, not just the CTA, a natural back-and-forth mix"
+
+
 def _fs_user_prompt(fs: dict) -> str:
     cust = fs.get("customer")
     if cust:
@@ -1168,7 +1177,7 @@ def _fs_user_prompt(fs: dict) -> str:
         f"CTA TYPE (sentence 3): {cta_line}\n"
         f"AVOID: {fs.get('avoid', 'a metrics dump')}\n"
         f"ARTIFACT: {'yes' if fs['artifact_expected'] else 'no'}\n"
-        f"CODE-SWITCH (Hindi-English mix): {'yes - REQUIRED throughout the message, not just the CTA' if fs['code_switch'] else 'no - plain English'}\n\n"
+        f"CODE-SWITCH: {_code_switch_line(fs)}\n\n"
         f"VERIFIED FACTS (may be stated plainly, cite verbatim):\n{hard}"
         f"{soft_block}"
         f"{thin_note}\n\n"
