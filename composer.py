@@ -878,14 +878,15 @@ def _deterministic_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer:
         fn = CUSTOMER_COMPOSERS.get(kind, _cf_generic)
         args = (category, merchant, trigger, payload, customer)
         name, facts, cta_en, cta_type, levers = fn(*args) if fn is not _cf_generic else fn(*args)
-        greeting = f"Namaste {name}," if mode == "hi_en" else f"Hi {name},"
+        cust_det_mode = "en" if _g(category, "voice", "code_mix") == "english_primary_some_hindi" else mode
+        greeting = f"Namaste {name}," if cust_det_mode == "hi_en" else f"Hi {name},"
         facts_joined = _lead_lower(" ".join(f.strip() for f in facts if f and f.strip()))
         body = f"{greeting} " + facts_joined
         body += " " + cta_en
         # None of the CUSTOMER_COMPOSERS write a Hindi variant (unlike the merchant path's
         # pick(cta_en, cta_hi, mode)) - close that gap with a generic, kind-agnostic nudge
         # rather than leaving every customer DET fallback in English regardless of preference.
-        if mode == "hi_en":
+        if cust_det_mode == "hi_en":
             body += " " + _HI_CTA_NUDGE.get(cta_type, "Jo bhi sahi lage, bata dijiye.")
         body = sanitize_taboos(body, taboos)
         send_as = "merchant_on_behalf"
@@ -899,7 +900,13 @@ def _deterministic_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer:
         fn = MERCHANT_COMPOSERS.get(kind, _mf_generic)
         facts, cta_en, cta_hi, cta_type, levers, suffix = fn(category, merchant, trigger, payload)
         greeting = _merchant_greeting(category, merchant)
-        cta = pick(cta_en, cta_hi, mode)
+        # DET has only a binary en/hi CTA per kind, no light-touch variant. A category whose
+        # voice.code_mix is "english_primary_some_hindi" (gyms) is closer served by the
+        # English CTA than by the same full-Hinglish one used for hindi_english_natural
+        # categories - smallest fix that keeps this path's behaviour consistent with the LLM
+        # path's category-aware intensity, without writing a third CTA string per composer.
+        det_mode = "en" if _g(category, "voice", "code_mix") == "english_primary_some_hindi" else mode
+        cta = pick(cta_en, cta_hi, det_mode)
         facts_joined = _lead_lower(" ".join(f.strip() for f in facts if f and f.strip()))
         body = f"{greeting}, " + facts_joined
         body += " " + cta
