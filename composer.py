@@ -1149,16 +1149,23 @@ def _fs_user_prompt(fs: dict) -> str:
     voice = "; ".join(x for x in [fs.get("voice_rules"), fs.get("voice_tone")] if x)
     thin_note = ""
     if "no extra detail" in fs.get("why_now", ""):
+        # "your regular medicines" used to be hardcoded here regardless of category - a
+        # chronic_refill_due placeholder trigger fired against a DENTIST still got pharmacy
+        # framing ("medicines", implicitly stock/dose/pack), which the judge correctly
+        # flagged as wrong-trade. Pick the generic noun by category instead.
+        generic_item = {"pharmacies": "your regular medicines"}.get(
+            fs.get("category_slug", ""), "your regular order")
         thin_note = ("\nNOTE: this alert carries NO specifics about what happened. Do NOT invent ANY "
                      "detail about it - no competitor name, no competitor type/cuisine ('a new South "
                      "Indian cafe'), no 'right next door' / 'a stone's throw', no price, no distance, "
                      "no milestone number, no review/customer count, no percentage, no 'X% cheaper', "
-                     "no dates, no day of the week, no invented appointment time, and (this one is "
+                     "no dates, no day of the week, no invented appointment time, no invented stock "
+                     "level, dose or pack details, and (this one is "
                      "easy to miss) no invented MEDICINE, PROCEDURE or SERVICE name either - if the "
-                     "facts don't say which medicine/treatment this is, say 'your regular medicines' "
+                     f"facts don't say which one this is, say '{generic_item}' "
                      "/ 'your usual treatment', never a specific made-up one like 'fluoride varnish' "
                      "or 'your antibiotic'. Say ONLY 'a new competitor has opened nearby' / 'it's been "
-                     "a while' / 'your usual medicines' and nothing more about the event itself. You "
+                     f"a while' / '{generic_item}' and nothing more about the event itself. You "
                      "CAN'T win on specificity here, so win on the "
                      "other three: (a) MERCHANT FIT - name the business, its locality and its owner, "
                      "and reference its real listed 30-day numbers or active offer so the message "

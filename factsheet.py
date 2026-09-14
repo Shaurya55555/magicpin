@@ -366,6 +366,12 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
 
     cust = None
     _has_last_topic = False   # set True below only if merchant.conversation_history actually has one
+    # T08 finding (2026-09-14): chronic_refill_due's hook unconditionally implied real
+    # molecule/stock data even on a placeholder trigger (payload={"placeholder": true}) -
+    # same failure shape as the dormant_with_vera fix below, just never applied here. The
+    # LLM filled the gap by inventing a full refill narrative ("stock will run out soon",
+    # "same dose, same pack") for a DENTIST, where that framing doesn't even fit the trade.
+    _has_refill_data = _present(payload.get("molecule_list")) or _present(payload.get("stock_runs_out_iso"))
 
     if scope_customer:
         # ---- CUSTOMER-FACING: the reader is the customer, NOT the owner. ----
@@ -547,10 +553,25 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
             # there's no data to back it.
             "how long since you last spoke - do NOT invent what it was about, no data for that"
             if kind == "dormant_with_vera" and not _has_last_topic
+            else ("a recurring order is due - do NOT invent which medicine/item it is, what the "
+                  "stock level is, or when it runs out, no data for that; keep it generic "
+                  "('your regular order') and category-appropriate")
+            if kind == "chronic_refill_due" and not _has_refill_data
             else _KS.get(kind, {}).get("hook") or "the single most relevant fact in the list"
         ),
-        "consequence": _KS.get(kind, {}).get("consequence", ""),
-        "cta_hint": _KS.get(kind, {}).get("cta", "one easy, decisive step"),
+        "consequence": (
+            # same wrong-trade issue as the hook above: "same dose, same pack" is pharmacy
+            # jargon that leaked into every category via the shared _KS entry (T08: a
+            # dentist message that read "we've prepared the same dose and pack").
+            "the recurring order is ready to go, no back-and-forth needed"
+            if kind == "chronic_refill_due" and slug != "pharmacies"
+            else _KS.get(kind, {}).get("consequence", "")
+        ),
+        "cta_hint": (
+            "a CONFIRM to proceed"
+            if kind == "chronic_refill_due" and slug != "pharmacies"
+            else _KS.get(kind, {}).get("cta", "one easy, decisive step")
+        ),
         "slot_cta": slot_cta,
         "avoid": _KS.get(kind, {}).get("avoid", "a metrics dump"),
         "objective": _KIND_STRATEGY.get(kind, ("one useful next step", ""))[0],
@@ -706,6 +727,42 @@ def _unsupported_history_claim_check(body: str, fs: dict) -> tuple[bool, str]:
     return True, "ok"
 
 
+# GPT-review follow-up (2026-09-14): same fabrication shape as the history-claim bug above
+# (a claim the number/date validator can't see because it's a bare noun phrase, not a
+# figure), for the other claim classes flagged as high-risk: subscription status, a named
+# competitor, and "your usual/regular" pattern language. Each requires a fact label
+# containing its keyword to actually be present in the sheet - not just plausible-sounding.
+_SOURCE_GATED_CLAIMS = [
+    (re.compile(r"\byour subscription\b", re.I), "subscription",
+     "claims something about 'your subscription' but no subscription fact was provided"),
+    (re.compile(r"\byour competitor|the competitor\b", re.I), "competitor",
+     "references a competitor but no competitor fact was provided"),
+    # scoped to PATTERN claims only ("your usual seasonal dip/rush") - "your regular
+    # order/medicines" is the deliberate safe generic noun chronic_refill_due's own hook
+    # tells the model to use on a placeholder trigger, so it must NOT be caught here.
+    (re.compile(r"\byour usual (seasonal|pattern)\b|\byour regular (seasonal|pattern)\b", re.I), None,
+     "claims a 'usual/regular pattern' - unverifiable unless the trigger itself is the seasonal/pattern kind"),
+]
+
+
+def _source_gated_claim_check(body: str, fs: dict) -> tuple[bool, str]:
+    # T16 false-positive found by spot-checking historical outputs: a real subscription
+    # claim was grounded via the "what was last discussed: subscription_expiry" soft fact's
+    # VALUE, not any fact's label - label-only search missed it. Search both.
+    facts = fs.get("hard_facts", []) + fs.get("soft_facts", [])
+    haystack = " ".join(f"{f['label']} {f['value']}".lower() for f in facts)
+    for pat, keyword, msg in _SOURCE_GATED_CLAIMS:
+        if not pat.search(body):
+            continue
+        if keyword is None:
+            # "usual/regular" is only legitimate on the trigger kind that actually means that
+            if fs.get("kind") not in ("seasonal_perf_dip",):
+                return False, msg
+        elif keyword not in haystack:
+            return False, msg
+    return True, "ok"
+
+
 def validate_output(body: str, fs: dict) -> tuple[bool, str]:
     if not body or len(body.strip()) < 25:
         return False, "empty/too short"
@@ -785,6 +842,10 @@ def validate_output(body: str, fs: dict) -> tuple[bool, str]:
         return False, why
 
     ok, why = _unsupported_history_claim_check(body, fs)
+    if not ok:
+        return False, why
+
+    ok, why = _source_gated_claim_check(body, fs)
     if not ok:
         return False, why
 
