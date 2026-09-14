@@ -1220,6 +1220,27 @@ def _has_code_switch(body: str) -> bool:
     return bool(_HI_WORDS.search(body))
 
 
+def _quality_gate(body: str, fs: dict) -> tuple[bool, str]:
+    """Deterministic structural checks, separate from validate_output's grounding checks.
+    Grounding asks 'is this true'; this asks 'is this a well-formed Vera message'. Kept to
+    checks we have real evidence for, not speculative rules - each maps to an actual bug
+    seen this session."""
+    # T12 double-ask: two separate questions each demanding a reply, not one CTA with an
+    # embedded choice ("Reply 1 for Wed, 2 for Thu" has no '?' at all).
+    if body.count("?") >= 2:
+        return False, "two separate asks (more than one '?') - collapse to one CTA"
+    # rubric: "a message that could belong to any business loses points" - the business
+    # name or its locality should appear at least once, for a merchant-facing message.
+    if fs.get("scope") != "customer":
+        biz = (fs.get("biz_name") or "").strip()
+        loc = (fs.get("locality") or "").strip()
+        biz_word = biz.split(",")[0].split()[0] if biz else ""
+        low = body.lower()
+        if biz and biz_word and biz_word.lower() not in low and (not loc or loc.lower() not in low):
+            return False, f"business identity ('{biz}') never named in the message"
+    return True, "ok"
+
+
 def _llm_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[Ctx] = None):
     if not llm_client.available():
         return None
@@ -1257,6 +1278,11 @@ def _llm_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[
         if ok and attempt == 0 and fs.get("code_switch") and not _has_code_switch(cand):
             ok = False
             reject_reason = "missing the required Hindi-English code-mix (not just in the CTA)"
+        if ok and attempt == 0:
+            gate_ok, gate_reason = _quality_gate(cand, fs)
+            if not gate_ok:
+                ok = False
+                reject_reason = gate_reason
         if ok:
             body = cand
             break
