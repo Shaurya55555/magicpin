@@ -1076,7 +1076,11 @@ def _curate_hard_facts(fs: dict, kind: str) -> list:
         want = _CUST_KIND_FACTS.get(kind)
         if not want:
             return facts
-        return [f for f in facts if any(w in f["label"].lower() for w in want)] or facts
+        payload_labels = set(fs.get("payload_keys") or [])
+        # payload facts are never subject to the kind-keyword filter here either - same
+        # guarantee as the merchant path, closing the customer-side half of the same gap.
+        kept = [f for f in facts if f["label"] in payload_labels or any(w in f["label"].lower() for w in want)]
+        return kept or facts
     wanted = _KIND_FACTS.get(kind)
     if not wanted:
         return facts[:8]

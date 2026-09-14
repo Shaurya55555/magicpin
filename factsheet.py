@@ -303,9 +303,21 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
     hard: list[dict] = []
     soft: list[dict] = []
 
+    payload_labels: list[str] = []   # labels of facts that trace to trigger.payload, tracked at
+                                       # creation time - not reconstructed later by fuzzy-matching
+                                       # raw key names, which breaks for any renamed/humanized label
+                                       # (a "_pct" suffix stripped, milestone's computed labels, etc.)
+
     def H(label, value):
         if _present(value):
             hard.append({"label": label, "value": str(fix_text(value))})
+
+    def HP(label, value):
+        """Like H(), but for a fact that traces to the trigger payload - always survives
+        curation regardless of which kind-specific keyword list is checked."""
+        if _present(value):
+            hard.append({"label": label, "value": str(fix_text(value))})
+            payload_labels.append(label)
 
     def HA(label, value, attrib):
         # a hard (validated) fact that must be phrased WITH its source, so a judge that
@@ -328,9 +340,9 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
         # mislabelled as a leads/views figure.
         if kind == "milestone_reached" and _present(payload.get("value_now")):
             mname = str(payload.get("metric", "")).replace("_", " ") or "count"
-            H(f"current {mname}", payload["value_now"])
+            HP(f"current {mname}", payload["value_now"])
             if _present(payload.get("milestone_value")):
-                H(f"the {mname} milestone just ahead", payload["milestone_value"])
+                HP(f"the {mname} milestone just ahead", payload["milestone_value"])
         for pk, pv in (payload or {}).items():
             if _skip_payload_key(pk) or not _present(pv):
                 continue
@@ -342,9 +354,9 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
             if pk.endswith(("_pct", "_percent", "_pc")) and isinstance(pv, (int, float)):
                 # e.g. estimated_uplift_pct: 0.3  ->  "estimated uplift: +30%"
                 label = re.sub(r"\s*(pct|percent|pc)$", "", label).strip()
-                H(label, _pct(pv))
+                HP(label, _pct(pv))
             else:
-                H(label, _humanize_value(pv))
+                HP(label, _humanize_value(pv))
 
     # active offers (both scopes) — titles carry the ₹ amounts the judge can see
     def _emit_offers():
@@ -549,7 +561,10 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
         "artifact_expected": kind in _ARTIFACT_KINDS and not scope_customer,
         "hard_facts": hard,
         "soft_facts": soft,
-        "payload_keys": [k.replace("_", " ") for k in (payload or {}) if not _skip_payload_key(k)],
+        # tracked at creation time (see HP()) - correct even for a relabeled/humanized fact,
+        # unlike reconstructing from raw payload key names which breaks for anything renamed
+        # (a stripped "_pct" suffix, milestone's computed "current <metric>" labels, etc.)
+        "payload_keys": payload_labels,
         "suppression_key": trigger.get("suppression_key", f"{kind}:{trigger.get('id','')}"),
     }
 
