@@ -1153,9 +1153,15 @@ def _fs_user_prompt(fs: dict) -> str:
         # "your regular medicines" used to be hardcoded here regardless of category - a
         # chronic_refill_due placeholder trigger fired against a DENTIST still got pharmacy
         # framing ("medicines", implicitly stock/dose/pack), which the judge correctly
-        # flagged as wrong-trade. Pick the generic noun by category instead.
-        generic_item = {"pharmacies": "your regular medicines"}.get(
-            fs.get("category_slug", ""), "your regular order")
+        # flagged as wrong-trade. "your regular order" turned out to be the same mistake
+        # in different words - a dentist doesn't have "orders" either (T08 round 2, still
+        # 12/50: "invents an order which is not present in the data"). For chronic_refill_due
+        # outside pharmacies, drop the refill/order concept entirely - it's a recall visit.
+        generic_item = (
+            "it's been a while since they were last in"
+            if fs.get("kind") == "chronic_refill_due" and fs.get("category_slug") != "pharmacies"
+            else {"pharmacies": "your regular medicines"}.get(fs.get("category_slug", ""), "your regular order")
+        )
         thin_note = ("\nNOTE: this alert carries NO specifics about what happened. Do NOT invent ANY "
                      "detail about it - no competitor name, no competitor type/cuisine ('a new South "
                      "Indian cafe'), no 'right next door' / 'a stone's throw', no price, no distance, "

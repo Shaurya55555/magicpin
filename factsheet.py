@@ -279,8 +279,14 @@ def _humanize_value(v) -> str:
     return s.replace("_", " ")
 
 
-def _why_now(kind, payload):
-    k = kind.replace("_", " ")
+def _why_now(kind, payload, slug=""):
+    # T08 root cause (round 3): the raw kind name leaks into "WHY NOW" verbatim regardless
+    # of what the hook/consequence/cta overrides below say - "chronic refill due" put the
+    # word "refill" directly in front of the LLM, which is exactly why "dispatch"/"dose"
+    # kept resurfacing even after those were fixed. Rename it for non-pharmacy categories
+    # so nothing in the prompt implies a refill/order concept that doesn't exist there.
+    k = ("check-in due" if kind == "chronic_refill_due" and slug != "pharmacies"
+         else kind.replace("_", " "))
     p = payload or {}
     real = {kk: vv for kk, vv in p.items() if not _skip_payload_key(kk) and _present(vv)}
     if real:
@@ -499,7 +505,7 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
     else:
         code_switch = "hi" in [str(l).lower() for l in langs]
 
-    why = _why_now(kind, payload)
+    why = _why_now(kind, payload, slug)
     if not scope_customer:
         di2 = _digest_item(category, payload)
         if di2 and di2.get("title"):
@@ -553,27 +559,46 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
             # there's no data to back it.
             "how long since you last spoke - do NOT invent what it was about, no data for that"
             if kind == "dormant_with_vera" and not _has_last_topic
-            else ("a recurring order is due - do NOT invent which medicine/item it is, what the "
-                  "stock level is, or when it runs out, no data for that; keep it generic "
-                  "('your regular order') and category-appropriate")
+            # T08, round 2: even the generic "your regular order" swap still scored 12/50 -
+            # "refill/order/dispatch" is a PHARMACY-shaped concept, not a noun problem. A
+            # dentist doesn't have "orders." For any non-pharmacy category with no real
+            # refill data, drop the refill framing entirely and treat it like a soft
+            # recall/check-in instead - the one framing that's honest and fits every trade.
+            else ("their recurring care schedule has a step due now - do NOT invent which one "
+                  "(no data for that), but DO tie it to their ongoing care relationship with "
+                  "this business, not a one-off first-time visit")
+            if kind == "chronic_refill_due" and not _has_refill_data and slug != "pharmacies"
+            else "the medicines and when the stock runs out"
             if kind == "chronic_refill_due" and not _has_refill_data
             else _KS.get(kind, {}).get("hook") or "the single most relevant fact in the list"
         ),
         "consequence": (
-            # same wrong-trade issue as the hook above: "same dose, same pack" is pharmacy
-            # jargon that leaked into every category via the shared _KS entry (T08: a
-            # dentist message that read "we've prepared the same dose and pack").
-            "the recurring order is ready to go, no back-and-forth needed"
-            if kind == "chronic_refill_due" and slug != "pharmacies"
+            "an easy way to hold a slot, no pressure"
+            if kind == "chronic_refill_due" and not _has_refill_data and slug != "pharmacies"
+            # "same dose, same pack" is pharmacy jargon - only valid once real refill data
+            # exists, or the category actually is a pharmacy.
+            else "same dose, same pack, ready"
+            if kind == "chronic_refill_due"
             else _KS.get(kind, {}).get("consequence", "")
         ),
         "cta_hint": (
-            "a CONFIRM to proceed"
-            if kind == "chronic_refill_due" and slug != "pharmacies"
+            "a warm yes/no to re-engage"
+            if kind == "chronic_refill_due" and not _has_refill_data and slug != "pharmacies"
+            else "a CONFIRM to dispatch"
+            if kind == "chronic_refill_due"
             else _KS.get(kind, {}).get("cta", "one easy, decisive step")
         ),
         "slot_cta": slot_cta,
-        "avoid": _KS.get(kind, {}).get("avoid", "a metrics dump"),
+        "avoid": (
+            # T08, round 3: hook/consequence/cta_hint were all fixed, but the LLM still
+            # drifted back to "Reply CONFIRM to dispatch... if your dose has changed" on
+            # its own - a memorized phrase pattern the cta_hint text alone didn't override.
+            # Forbid the specific words directly rather than keep rephrasing hints.
+            "the words 'dispatch', 'dose', 'refill', 'pack', 'stock' or 'order' - none of "
+            "them apply here; this is a plain visit check-in, not a goods transaction"
+            if kind == "chronic_refill_due" and not _has_refill_data and slug != "pharmacies"
+            else _KS.get(kind, {}).get("avoid", "a metrics dump")
+        ),
         "objective": _KIND_STRATEGY.get(kind, ("one useful next step", ""))[0],
         "lever": _LEVER_BY_KIND.get(kind, "reciprocity"),
         "cta_type": ("none" if kind in _NONE_CTA_KINDS
@@ -777,6 +802,15 @@ def validate_output(body: str, fs: dict) -> tuple[bool, str]:
     if not fs.get("artifact_expected") and len(body.split()) > 90:
         return False, f"too long ({len(body.split())} words) - tighten substantially"
     low = body.lower()
+    # T08: even an explicit "AVOID: never use these words" prompt line didn't reliably stop
+    # the model drifting back to pharmacy-refill vocabulary ("dispatch", "dose") on a
+    # chronic_refill_due trigger fired against a non-pharmacy category - a prompt-only
+    # instruction the model sometimes ignores isn't enough; make it a hard structural reject
+    # so a non-compliant draft forces a retry/DET-fallback instead of shipping wrong-trade copy.
+    if fs.get("kind") == "chronic_refill_due" and fs.get("category_slug") != "pharmacies":
+        for w in ("dispatch", "dose", "refill", "medicine", "prescription"):
+            if w in low:
+                return False, f"wrong-trade word {w!r} - this category doesn't have refills/dispatch"
     for j in _JARGON:
         if j in low:
             return False, f"jargon leak: {j!r}"
