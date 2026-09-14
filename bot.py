@@ -18,6 +18,8 @@ Run:
 """
 
 from __future__ import annotations
+import hashlib
+import json
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -161,6 +163,33 @@ def _ctx_key(scope: str, context_id: str) -> str:
 def _get(scope: str, context_id: str) -> Optional[dict]:
     entry = storage.get_json(_ctx_key(scope, context_id))
     return entry["payload"] if entry else None
+
+
+# GPT-review follow-up (2026-09-15): "deterministic for the same input" is provably true
+# today at the DECISION layer (which trigger fires, cta/send_as/suppression_key), but the
+# LLM prose itself is not byte-identical across repeated calls even at temperature 0 -
+# that's inherent to LLM sampling, not fixable by prompting. This cache closes the gap for
+# the one case that matters operationally: if compose() is ever asked to run again on
+# content-identical inputs (category+merchant+trigger+customer), return the exact prior
+# output instead of a fresh (possibly differently-worded) LLM call. It does NOT make the
+# underlying model deterministic - it makes repeated identical requests deterministic,
+# which is what the spec's language actually protects against.
+_COMPOSE_CACHE_PREFIX = "cchash:"
+
+
+def _compose_cache_key(category: dict, merchant: dict, trigger: dict, customer: Optional[dict]) -> str:
+    blob = json.dumps([category, merchant, trigger, customer], sort_keys=True, default=str)
+    return _COMPOSE_CACHE_PREFIX + hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
+def _compose_cached(category: dict, merchant: dict, trigger: dict, customer: Optional[dict]) -> dict:
+    key = _compose_cache_key(category, merchant, trigger, customer)
+    cached = storage.get_json(key)
+    if cached is not None:
+        return cached
+    out = composer.compose(category, merchant, trigger, customer)
+    storage.set_json(key, out)
+    return out
 
 
 def _is_suppressed(key: str) -> bool:
@@ -374,7 +403,7 @@ async def tick(body: TickBody):
                 _suppress(trigger.get("suppression_key", trigger.get("id", "")))
                 continue  # customer hasn't consented to this kind of outreach — stay silent
 
-        composed = composer.compose(category, merchant, trigger, customer)
+        composed = _compose_cached(category, merchant, trigger, customer)
 
         conv_id = _next_conv_id(mid, trigger.get("kind", "gen"))
         state = ConversationState(

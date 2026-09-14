@@ -769,9 +769,13 @@ def validate_output(body: str, fs: dict) -> tuple[bool, str]:
     # LLMs love the unicode hyphen/dash — normalise so date & number checks can't be bypassed
     body = body.translate({0x2010: "-", 0x2011: "-", 0x2012: "-", 0x2013: "-", 0x2014: "-", 0x2212: "-"})
     # the brief sets "no hard cap" but says "keep it concise"; scored case studies run 40-75
-    # words. A non-artifact nudge past ~72 words is padded - force a rewrite.
-    if not fs.get("artifact_expected") and len(body.split()) > 72:
-        return False, f"too long ({len(body.split())} words) - tighten to ~50"
+    # words. The portal itself says "no hard cap - write the length that fits the
+    # context," so this is now a true runaway-rambling backstop, not a target: raised
+    # 72->90 so a legitimately dense, well-grounded 75-80 word answer (business fact +
+    # performance context + implication + offer + action) is never discarded outright.
+    # ~72 is still nudged for via composer._quality_gate's soft, retry-only check.
+    if not fs.get("artifact_expected") and len(body.split()) > 90:
+        return False, f"too long ({len(body.split())} words) - tighten substantially"
     low = body.lower()
     for j in _JARGON:
         if j in low:

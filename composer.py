@@ -17,6 +17,7 @@ Public entrypoint: compose(category, merchant, trigger, customer=None) -> dict w
 
 from __future__ import annotations
 import re
+import time
 from typing import Any, Optional
 
 import factsheet
@@ -1252,6 +1253,12 @@ def _quality_gate(body: str, fs: dict) -> tuple[bool, str]:
     # embedded choice ("Reply 1 for Wed, 2 for Thu" has no '?' at all).
     if body.count("?") >= 2:
         return False, "two separate asks (more than one '?') - collapse to one CTA"
+    # Soft length nudge (GPT-review follow-up, 2026-09-15): the portal has no hard word
+    # cap, so this is a preference, not a rule - only wired into attempt 0's retry path.
+    # validate_output's own 90-word ceiling is the real backstop; a draft that's merely
+    # a bit padded gets one retry toward tighter phrasing, never an outright discard.
+    if not fs.get("artifact_expected") and len(body.split()) > 72:
+        return False, f"a bit padded ({len(body.split())} words) - tighten toward ~50-60 if it doesn't cost specificity"
     # rubric: "a message that could belong to any business loses points" - the business
     # name or its locality should appear at least once, for a merchant-facing message.
     if fs.get("scope") != "customer":
@@ -1272,9 +1279,19 @@ def _llm_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[
     taboos = fs.get("taboos") or []
     user = _fs_user_prompt(fs)
 
+    # A global composer-wide deadline, not per-call. Before this fix, attempt 0 and the
+    # retry attempt each independently trusted llm_client's own "~21s worst case" budget -
+    # fine in isolation, but the two could stack toward/past the judge's 30s timeout under
+    # bad luck (e.g. both attempts hitting rate-limit rotation). ~9s total leaves a wide
+    # margin: ~6s for the primary attempt, whatever's left (capped at 2.5s) for the retry.
+    _deadline = time.monotonic() + 9.0
+
     body = None
     reject_reason = ""
     for attempt in range(2):
+        remaining = _deadline - time.monotonic()
+        if attempt == 1 and remaining < 1.0:
+            break   # not enough budget left for a meaningful retry - fall back deterministically
         sys_prompt = _LLM_SYSTEM
         if attempt == 1:
             sys_prompt += ("\n\nYOUR LAST ATTEMPT FAILED THE FABRICATION CHECK: " + reject_reason +
@@ -1283,14 +1300,16 @@ def _llm_compose(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Optional[
                            "specific-but-number-free message instead.")
         # Attempt 0 is temperature 0 (deterministic primary path, per the brief). The
         # rare recovery attempt uses a little temperature so it can actually escape
-        # whatever the validator rejected. Retry stays on the primary model so the
-        # two-attempt worst case stays well inside the 30s judge budget.
+        # whatever the validator rejected. Both attempts share _deadline, so the combined
+        # worst case is bounded regardless of how the time splits between them.
+        call_deadline = min(_deadline, time.monotonic() + (6.0 if attempt == 0 else 2.5))
         raw = llm_client.chat(sys_prompt, user, temperature=0.0 if attempt == 0 else 0.3,
-                              max_tokens=1200, try_fallback_model=(attempt == 0))
+                              max_tokens=1200, try_fallback_model=(attempt == 0),
+                              deadline=call_deadline)
         if not raw:
             # The client already retried with backoff; a None here means the provider is
-            # genuinely unavailable right now. Don't retry-storm — hand off to the
-            # deterministic engine immediately.
+            # genuinely unavailable right now (or the budget ran out). Don't retry-storm —
+            # hand off to the deterministic engine immediately.
             return None
         cand = sanitize_taboos(_clean_llm_body(raw), taboos)
         ok, reject_reason = factsheet.validate_output(cand, fs)

@@ -59,7 +59,8 @@ def model_label() -> str:
     return f"{PROVIDER}:{MODEL}" if available() else "deterministic-only"
 
 
-def _one_call(model: str, system: str, user: str, temperature: float, max_tokens: int):
+def _one_call(model: str, system: str, user: str, temperature: float, max_tokens: int,
+              call_timeout: float):
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -77,17 +78,21 @@ def _one_call(model: str, system: str, user: str, temperature: float, max_tokens
         },
         method="POST",
     )
-    resp = _rq.urlopen(req, timeout=TIMEOUT)
+    resp = _rq.urlopen(req, timeout=call_timeout)
     data = json.loads(resp.read().decode("utf-8"))
     return (data["choices"][0]["message"].get("content") or "").strip() or None
 
 
 def chat(system: str, user: str, *, temperature: float | None = None, max_tokens: int = 1200,
-         retries: int = 1, try_fallback_model: bool = True) -> str | None:
+         retries: int = 1, try_fallback_model: bool = True, deadline: float | None = None) -> str | None:
     """One composition's worth of generation. Bounded cost: at most
     (retries+1) tries on the primary model, plus one try on the fallback model.
-    With TIMEOUT=7 and retries=1 that is ~21s worst case, inside the 30s judge budget;
-    the common case is a single ~2s call."""
+    With TIMEOUT=7 and retries=1 that is ~21s worst case - on its own inside the 30s
+    judge budget, but composer._llm_compose can call this twice (attempt + retry), which
+    can stack past 30s in the worst case. `deadline` (a time.monotonic() cutoff) caps the
+    WHOLE call - each individual request's timeout is shortened to whatever time remains,
+    and no new attempt starts once the deadline has passed, so a caller enforcing an
+    overall composer-wide budget across multiple chat() calls actually holds."""
     if not available():
         return None
     if temperature is None:
@@ -99,8 +104,12 @@ def chat(system: str, user: str, *, temperature: float | None = None, max_tokens
         tries = (retries + 1) if mi == 0 else 1
         laps = 0
         for attempt in range(tries + len(_KEYS) * 2):
+            remaining = (deadline - time.monotonic()) if deadline is not None else TIMEOUT
+            if remaining <= 0.3:
+                return None   # out of budget - let the caller fall back deterministically
+            call_timeout = min(TIMEOUT, remaining)
             try:
-                out = _one_call(model, system, user, temperature, max_tokens)
+                out = _one_call(model, system, user, temperature, max_tokens, call_timeout)
                 if out:
                     return out
             except Exception as e:  # noqa: BLE001 — any failure -> retry / fallback / deterministic
@@ -111,11 +120,15 @@ def chat(system: str, user: str, *, temperature: float | None = None, max_tokens
                             laps += 1
                             if laps >= 2:
                                 break       # whole pool minute-limited -> deterministic
+                            if deadline is not None and time.monotonic() + 2 >= deadline:
+                                return None
                             time.sleep(2)   # let the per-minute window breathe
                         continue
                     if mi < len(models) - 1:
                         break
                 if attempt < tries - 1:
+                    if deadline is not None and time.monotonic() + 1.0 * (attempt + 1) >= deadline:
+                        return None
                     time.sleep(1.0 * (attempt + 1))
                 elif code != 429:
                     break
