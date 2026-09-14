@@ -353,6 +353,7 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
                 H("active offer running", fix_text(o["title"]))
 
     cust = None
+    _has_last_topic = False   # set True below only if merchant.conversation_history actually has one
 
     if scope_customer:
         # ---- CUSTOMER-FACING: the reader is the customer, NOT the owner. ----
@@ -467,7 +468,8 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
                 v = f"{sent} {str(rt['theme']).replace('_', ' ')}" + (f" ({occ} times last month)" if _present(occ) else "")
                 S("what recent reviews say", v, "say 'a few recent reviews mention'")
         ch = _g(merchant, "conversation_history", default=[]) or []
-        if ch and _present(ch[-1].get("body")):
+        _has_last_topic = bool(ch) and _present(ch[-1].get("body"))
+        if _has_last_topic:
             S("what was last discussed", f'"{fix_text(ch[-1]["body"])[:140]}"', "say 'last time we spoke'")
 
     # A customer-facing message is written TO the customer - their own language_pref decides
@@ -526,7 +528,15 @@ def build_factsheet(category: Ctx, merchant: Ctx, trigger: Ctx, customer: Option
         "customer": cust,
         "why_now": why,
         "purpose": _KS.get(kind, {}).get("purpose", "help them take one clear next step"),
-        "hook": _KS.get(kind, {}).get("hook") or "the single most relevant fact in the list",
+        "hook": (
+            # dormant_with_vera's hook says "...and what about" - only true if a real last
+            # conversation turn was actually pushed. Without one, the model was inventing a
+            # topic (field-deletion test caught this) to satisfy the hook. Drop that half when
+            # there's no data to back it.
+            "how long since you last spoke - do NOT invent what it was about, no data for that"
+            if kind == "dormant_with_vera" and not _has_last_topic
+            else _KS.get(kind, {}).get("hook") or "the single most relevant fact in the list"
+        ),
         "consequence": _KS.get(kind, {}).get("consequence", ""),
         "cta_hint": _KS.get(kind, {}).get("cta", "one easy, decisive step"),
         "slot_cta": slot_cta,
