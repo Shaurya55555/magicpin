@@ -230,7 +230,12 @@ def _polish(state: ConversationState, intent: str, det_body: str, merchant_msg: 
 
 _FOLLOWUP_Q = re.compile(
     r"\b(when|how (long|soon|much|does|will|do)|what('| i)?s? (the )?(cost|price|next|timeline|catch)|"
-    r"go live|goes? live|start(ing)?|turnaround|by when|which one|what happens|any (fee|charge))\b", re.I)
+    r"go live|goes? live|start(ing)?|turnaround|by when|which one|what happens|any (fee|charge)|"
+    # Hindi/Hinglish equivalents - the bot is required to code-switch, and a merchant asking a
+    # genuine timing/cost question in Hindi must not fall through to the off-topic classifier
+    # just because the classifier only recognised English phrasing.
+    r"kitna time|kitna waqt|kitne din|kab tak|kab hoga|kitna kharcha|kitna paisa|kitna lagega|"
+    r"kya price|price kya|kya cost|cost kya|kaise hoga|kaise karenge)\b", re.I)
 
 
 def _send(state, intent, det_body, msg, cta="open_ended"):
@@ -311,7 +316,10 @@ def respond(state: ConversationState, merchant_message: str) -> dict:
 
     # 6. Off-topic / out-of-scope -----------------------------------------
     looks_like_question = "?" in msg
-    on_topic = bool(re.search(r"\b(abstract|draft|post|slot|book|yes|no|price|offer|listing|review|promo|campaign)\b", msg.lower()))
+    on_topic = bool(re.search(
+        r"\b(abstract|draft|post|slot|book|yes|no|price|offer|listing|review|promo|campaign|"
+        # Hindi/Hinglish equivalents of the same on-topic nouns
+        r"offer|slot|price|waqt|paisa|kharcha|booking|samay)\b", msg.lower()))
     if (looks_like_question and not on_topic) or _match_any(OFFTOPIC_PATTERNS, msg):
         det = "That one's outside what I can help with — worth asking the right specialist. " + \
               (f"Back to us: {_as_plan(state.last_offer, 'shall I go ahead?')}." if state.last_offer else "Anything on the growth side I can help with?")
