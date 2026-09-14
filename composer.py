@@ -1112,7 +1112,9 @@ def _fs_user_prompt(fs: dict) -> str:
     cust = fs.get("customer")
     if cust:
         who = (f"READER: {cust.get('name')} — a CUSTOMER of this business (not a doctor, not the owner). "
-               f"You are writing AS the business TO this customer. Address them as '{cust.get('name')}', "
+               f"You are writing AS the business TO this customer, in the business's own register (see "
+               f"VOICE above) - warm to the customer, but still sounding like this trade, not generic. "
+               f"Address them as '{cust.get('name')}', "
                f"never with a 'Dr.' prefix. Their language preference is "
                f"{cust.get('language_pref') or 'en'}; age band {cust.get('age_band') or 'n/a'} "
                f"(for tone only — do not state their age).\n"
